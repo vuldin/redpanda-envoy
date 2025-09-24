@@ -9,8 +9,8 @@ Client Application (connects to envoy:9092)
            ↓
     Envoy Proxy (TCP Load Balancer)
      ↓ (priority 0)        ↓ (priority 1)
-Cluster A (Primary)    Cluster B (Secondary)
-cluster-a-broker-1     cluster-b-broker-1
+Primary Cluster       Secondary Cluster
+primary-broker-0       secondary-broker-0
 ```
 
 ## Key Features
@@ -85,8 +85,8 @@ cluster-a-broker-1     cluster-b-broker-1
 - 30 second ejection time for failed endpoints
 
 ### Priority-based Load Balancing
-- **Priority 0**: `cluster-a-broker-1` (Primary)
-- **Priority 1**: `cluster-b-broker-1` (Secondary)
+- **Priority 0**: `primary-broker-0` (Primary)
+- **Priority 1**: `secondary-broker-0` (Secondary)
 - Traffic only goes to secondary when primary is unhealthy
 
 ### Outlier Detection
@@ -98,11 +98,11 @@ cluster-a-broker-1     cluster-b-broker-1
 
 ### 1. Normal Operation
 - Both clusters healthy
-- All traffic routes to primary cluster (Cluster A)
-- Secondary cluster (Cluster B) remains ready for failover
+- All traffic routes to primary cluster
+- Secondary cluster remains ready for failover
 
 ### 2. Primary Cluster Failure
-- Primary unhealthy → Traffic automatically routes to secondary (Cluster B)
+- Primary unhealthy → Traffic automatically routes to secondary cluster
 - Clients experience brief connection interruption during TCP failover
 - New data written to secondary cluster
 

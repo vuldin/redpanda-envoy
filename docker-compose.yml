@@ -1,18 +1,20 @@
 services:
-  # Primary Redpanda Cluster
-  cluster-a-broker-1:
+  # Primary Redpanda Cluster (3 brokers)
+  primary-broker-0:
     image: redpandadata/redpanda:latest
-    container_name: cluster-a-broker-1
+    container_name: primary-broker-0
     command:
       - redpanda
       - start
+      - --node-id=1
       - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
-      - --advertise-kafka-addr internal://cluster-a-broker-1:9092,external://localhost:19092
+      - --advertise-kafka-addr internal://primary-broker-0:9092,external://localhost:19092
       - --pandaproxy-addr internal://0.0.0.0:8082,external://0.0.0.0:18082
-      - --advertise-pandaproxy-addr internal://cluster-a-broker-1:8082,external://localhost:18082
+      - --advertise-pandaproxy-addr internal://primary-broker-0:8082,external://localhost:18082
       - --schema-registry-addr internal://0.0.0.0:8081,external://0.0.0.0:18081
-      - --rpc-addr cluster-a-broker-1:33145
-      - --advertise-rpc-addr cluster-a-broker-1:33145
+      - --rpc-addr primary-broker-0:33145
+      - --advertise-rpc-addr primary-broker-0:33145
+      - --seeds primary-broker-0:33145,primary-broker-1:33145,primary-broker-2:33145
       - --smp 1
       - --memory 1G
       - --mode dev-container
@@ -24,26 +26,92 @@ services:
     networks:
       - redpanda-net
     healthcheck:
-      test: ["CMD-SHELL", "rpk cluster info --brokers=cluster-a-broker-1:9092 || exit 1"]
+      test: ["CMD-SHELL", "rpk cluster info --brokers=primary-broker-0:9092 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 30s
 
-  # Secondary Redpanda Cluster
-  cluster-b-broker-1:
+  primary-broker-1:
     image: redpandadata/redpanda:latest
-    container_name: cluster-b-broker-1
+    container_name: primary-broker-1
     command:
       - redpanda
       - start
+      - --node-id=2
+      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19093
+      - --advertise-kafka-addr internal://primary-broker-1:9092,external://localhost:19093
+      - --pandaproxy-addr internal://0.0.0.0:8082,external://0.0.0.0:18083
+      - --advertise-pandaproxy-addr internal://primary-broker-1:8082,external://localhost:18083
+      - --schema-registry-addr internal://0.0.0.0:8081,external://0.0.0.0:18084
+      - --rpc-addr primary-broker-1:33145
+      - --advertise-rpc-addr primary-broker-1:33145
+      - --seeds primary-broker-0:33145,primary-broker-1:33145,primary-broker-2:33145
+      - --smp 1
+      - --memory 1G
+      - --mode dev-container
+      - --default-log-level=info
+    ports:
+      - "19093:19093"
+      - "18083:18083"
+      - "18084:18084"
+    networks:
+      - redpanda-net
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster info --brokers=primary-broker-1:9092 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  primary-broker-2:
+    image: redpandadata/redpanda:latest
+    container_name: primary-broker-2
+    command:
+      - redpanda
+      - start
+      - --node-id=3
+      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19094
+      - --advertise-kafka-addr internal://primary-broker-2:9092,external://localhost:19094
+      - --pandaproxy-addr internal://0.0.0.0:8082,external://0.0.0.0:18085
+      - --advertise-pandaproxy-addr internal://primary-broker-2:8082,external://localhost:18085
+      - --schema-registry-addr internal://0.0.0.0:8081,external://0.0.0.0:18086
+      - --rpc-addr primary-broker-2:33145
+      - --advertise-rpc-addr primary-broker-2:33145
+      - --seeds primary-broker-0:33145,primary-broker-1:33145,primary-broker-2:33145
+      - --smp 1
+      - --memory 1G
+      - --mode dev-container
+      - --default-log-level=info
+    ports:
+      - "19094:19094"
+      - "18085:18085"
+      - "18086:18086"
+    networks:
+      - redpanda-net
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster info --brokers=primary-broker-2:9092 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # Secondary Redpanda Cluster (3 brokers)
+  secondary-broker-0:
+    image: redpandadata/redpanda:latest
+    container_name: secondary-broker-0
+    command:
+      - redpanda
+      - start
+      - --node-id=1
       - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:29092
-      - --advertise-kafka-addr internal://cluster-b-broker-1:9092,external://localhost:29092
+      - --advertise-kafka-addr internal://secondary-broker-0:9092,external://localhost:29092
       - --pandaproxy-addr internal://0.0.0.0:8082,external://0.0.0.0:28082
-      - --advertise-pandaproxy-addr internal://cluster-b-broker-1:8082,external://localhost:28082
+      - --advertise-pandaproxy-addr internal://secondary-broker-0:8082,external://localhost:28082
       - --schema-registry-addr internal://0.0.0.0:8081,external://0.0.0.0:28081
-      - --rpc-addr cluster-b-broker-1:33145
-      - --advertise-rpc-addr cluster-b-broker-1:33145
+      - --rpc-addr secondary-broker-0:33145
+      - --advertise-rpc-addr secondary-broker-0:33145
+      - --seeds secondary-broker-0:33145,secondary-broker-1:33145,secondary-broker-2:33145
       - --smp 1
       - --memory 1G
       - --mode dev-container
@@ -55,7 +123,71 @@ services:
     networks:
       - redpanda-net
     healthcheck:
-      test: ["CMD-SHELL", "rpk cluster info --brokers=cluster-b-broker-1:9092 || exit 1"]
+      test: ["CMD-SHELL", "rpk cluster info --brokers=secondary-broker-0:9092 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  secondary-broker-1:
+    image: redpandadata/redpanda:latest
+    container_name: secondary-broker-1
+    command:
+      - redpanda
+      - start
+      - --node-id=2
+      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:29093
+      - --advertise-kafka-addr internal://secondary-broker-1:9092,external://localhost:29093
+      - --pandaproxy-addr internal://0.0.0.0:8082,external://0.0.0.0:28083
+      - --advertise-pandaproxy-addr internal://secondary-broker-1:8082,external://localhost:28083
+      - --schema-registry-addr internal://0.0.0.0:8081,external://0.0.0.0:28084
+      - --rpc-addr secondary-broker-1:33145
+      - --advertise-rpc-addr secondary-broker-1:33145
+      - --seeds secondary-broker-0:33145,secondary-broker-1:33145,secondary-broker-2:33145
+      - --smp 1
+      - --memory 1G
+      - --mode dev-container
+      - --default-log-level=info
+    ports:
+      - "29093:29093"
+      - "28083:28083"
+      - "28084:28084"
+    networks:
+      - redpanda-net
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster info --brokers=secondary-broker-1:9092 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  secondary-broker-2:
+    image: redpandadata/redpanda:latest
+    container_name: secondary-broker-2
+    command:
+      - redpanda
+      - start
+      - --node-id=3
+      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:29094
+      - --advertise-kafka-addr internal://secondary-broker-2:9092,external://localhost:29094
+      - --pandaproxy-addr internal://0.0.0.0:8082,external://0.0.0.0:28085
+      - --advertise-pandaproxy-addr internal://secondary-broker-2:8082,external://localhost:28085
+      - --schema-registry-addr internal://0.0.0.0:8081,external://0.0.0.0:28086
+      - --rpc-addr secondary-broker-2:33145
+      - --advertise-rpc-addr secondary-broker-2:33145
+      - --seeds secondary-broker-0:33145,secondary-broker-1:33145,secondary-broker-2:33145
+      - --smp 1
+      - --memory 1G
+      - --mode dev-container
+      - --default-log-level=info
+    ports:
+      - "29094:29094"
+      - "28085:28085"
+      - "28086:28086"
+    networks:
+      - redpanda-net
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster info --brokers=secondary-broker-2:9092 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -67,15 +199,25 @@ services:
     container_name: envoy-proxy
     ports:
       - "9092:9092"
+      - "9093:9093"
+      - "9094:9094"
       - "9901:9901"  # Admin interface
     volumes:
       - ./envoy-proxy/envoy.yaml:/etc/envoy/envoy.yaml
     networks:
       - redpanda-net
     depends_on:
-      cluster-a-broker-1:
+      primary-broker-0:
         condition: service_healthy
-      cluster-b-broker-1:
+      primary-broker-1:
+        condition: service_healthy
+      primary-broker-2:
+        condition: service_healthy
+      secondary-broker-0:
+        condition: service_healthy
+      secondary-broker-1:
+        condition: service_healthy
+      secondary-broker-2:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "/bin/bash -c 'echo > /dev/tcp/localhost/9901' || exit 1"]

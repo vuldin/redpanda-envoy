@@ -11,8 +11,8 @@ Client Application (connects to envoy:9092)
            ↓
     Envoy Proxy (TCP Load Balancer)
      ↓ (priority 0)        ↓ (priority 1)
-Cluster A (Primary)    Cluster B (Secondary)
-cluster-a-broker-1     cluster-b-broker-1
+Primary Cluster       Secondary Cluster
+primary-broker-0       secondary-broker-0
            ↓                      ↑
            └── Redpanda Migrator ─┘
               (Real-time Replication)
@@ -21,10 +21,10 @@ cluster-a-broker-1     cluster-b-broker-1
 ## Key Components
 
 ### Services in Docker Compose
-- **cluster-a-broker-1**: Primary Redpanda cluster (port 19092 external)
-- **cluster-b-broker-1**: Secondary Redpanda cluster (port 29092 external)
+- **primary-broker-0**: Primary Redpanda cluster (port 19092 external)
+- **secondary-broker-0**: Secondary Redpanda cluster (port 29092 external)
 - **envoy-proxy**: TCP proxy listening on port 9092, routes to clusters with priority-based failover
-- **migrator**: Redpanda Connect service for real-time replication from Cluster A → Cluster B
+- **migrator**: Redpanda Connect service for real-time replication from Primary → Secondary
 - **test-client**: Container with RPK-based test scripts
 
 ### Configuration Files
@@ -38,13 +38,13 @@ cluster-a-broker-1     cluster-b-broker-1
 ## Important Configuration Details
 
 ### Envoy Priority-based Load Balancing
-- Priority 0: cluster-a-broker-1 (Primary) - preferred when healthy
-- Priority 1: cluster-b-broker-1 (Secondary) - used when primary unhealthy
+- Priority 0: primary-broker-0 (Primary) - preferred when healthy
+- Priority 1: secondary-broker-0 (Secondary) - used when primary unhealthy
 - Health checks every 5 seconds with TCP connectivity tests
 - 30-second ejection time for failed endpoints
 
 ### Redpanda Connect Replication
-- Replicates `failover-demo-topic` from Cluster A to Cluster B
+- Replicates `failover-demo-topic` from Primary to Secondary
 - Preserves message keys, partition information, and timestamps
 - Does NOT replicate consumer group state or topic configurations
 - Uses `kafka_franz` input/output connectors
@@ -104,7 +104,7 @@ docker logs redpanda-migrator -f
 - All services on `redpanda-net` bridge network
 - Client connections go through envoy:9092
 - Internal cluster communication on standard ports
-- External access: 19092 (Cluster A), 29092 (Cluster B), 9901 (Envoy admin)
+- External access: 19092 (Primary), 29092 (Secondary), 9901 (Envoy admin)
 
 ## Data Consistency
 - Real-time replication ensures secondary cluster has same messages as primary

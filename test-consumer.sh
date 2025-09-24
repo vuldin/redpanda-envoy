@@ -1,12 +1,15 @@
 #!/bin/bash
 
-echo "🚀 Starting RPK-based consumer test - connecting to envoy:9092"
-echo "This consumer will continuously read messages to demonstrate failover"
+echo "🚀 Starting RPK-based consumer test with failover support"
+echo "This consumer will continuously read messages and handle broker failures"
+echo "Brokers: envoy:9092,envoy:9093,envoy:9094 (with automatic failover)"
 echo "Press Ctrl+C to stop"
 echo "=========================================="
 
 # Flag to track if we should exit
 should_exit=false
+consecutive_failures=0
+max_failures=3
 
 # Signal handler for Ctrl+C
 cleanup() {
@@ -21,55 +24,53 @@ cleanup() {
 # Set up signal trap
 trap cleanup SIGINT SIGTERM
 
-# Consumer with retry logic for better failover handling
+# Consumer with enhanced retry logic for failover handling
 first_run=true
 while [ "$should_exit" = false ]; do
     if [ "$first_run" = true ]; then
         echo "🔄 Starting consumer..."
         first_run=false
     else
-        echo "🔄 Restarting consumer..."
+        echo "🔄 Restarting consumer (attempt after $consecutive_failures failures)..."
     fi
 
-    rpk topic consume failover-demo-topic \
-        --brokers envoy:9092 \
+    # Use timeout and enhanced error handling
+    timeout 45 rpk topic consume failover-demo-topic \
+        --brokers envoy:9092,envoy:9093,envoy:9094 \
         --group failover-demo-group \
         --offset start \
-        --fetch-max-wait 30s \
+        --fetch-max-wait 10s \
         --format 'Consumed from partition %p at offset %o with timestamp %T.
-✅ Received message: %v' &
+✅ Received message: %v' 2>/dev/null
 
-    # Get the PID of the background process
-    rpk_pid=$!
-
-    # Wait for the process to complete with timeout
-    timeout 60 bash -c "wait $rpk_pid" 2>/dev/null
-    wait_result=$?
-
-    if [ $wait_result -eq 124 ]; then
-        # Timeout occurred, kill the rpk process
-        echo "⏰ Consumer hung, killing and restarting..."
-        kill -9 $rpk_pid 2>/dev/null
-        exit_code=1
-    else
-        # Get actual exit code
-        wait $rpk_pid 2>/dev/null
-        exit_code=$?
-    fi
+    exit_code=$?
 
     # Check if we should exit due to signal
     if [ "$should_exit" = true ]; then
         break
     fi
 
-    # Handle different exit codes
+    # Handle different exit codes and implement progressive backoff
     if [ $exit_code -eq 0 ]; then
         echo "ℹ️  Consumer exited normally"
-        break
+        consecutive_failures=0
+    elif [ $exit_code -eq 124 ]; then
+        # Timeout - this is expected during normal operation when no messages
+        echo "⏰ Consumer timeout (no new messages) - continuing..."
+        consecutive_failures=0
+        sleep 2
     else
-        echo "⚠️  Consumer timeout (no messages), restarting..."
-        if [ "$should_exit" = false ]; then
-            sleep 3
+        # Connection error or other failure
+        consecutive_failures=$((consecutive_failures + 1))
+        echo "❌ Consumer failed with exit code $exit_code (failure $consecutive_failures/$max_failures)"
+
+        if [ $consecutive_failures -ge $max_failures ]; then
+            echo "⚠️  Multiple consumer failures - waiting 15 seconds for failover to complete..."
+            sleep 15
+            consecutive_failures=0
+        else
+            echo "🔄 Retrying in 5 seconds..."
+            sleep 5
         fi
     fi
 done

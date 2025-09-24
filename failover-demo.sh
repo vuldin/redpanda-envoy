@@ -9,26 +9,26 @@ check_health() {
 
     # Check container status first
     echo "Container status:"
-    docker ps --format "table {{.Names}}\t{{.Status}}" | grep -E "(cluster-a-broker-1|cluster-b-broker-1|envoy-proxy)"
+    docker ps --format "table {{.Names}}\t{{.Status}}" | grep -E "(primary-broker-0|secondary-broker-0|envoy-proxy)"
     echo ""
 
-    # Check Cluster A
-    echo "Cluster A detailed status:"
-    if docker exec cluster-a-broker-1 rpk cluster info --brokers cluster-a-broker-1:9092 2>/dev/null; then
-        echo "✅ Cluster A healthy"
+    # Check Primary Cluster
+    echo "Primary cluster detailed status:"
+    if docker exec primary-broker-0 rpk cluster info --brokers primary-broker-0:9092 2>/dev/null; then
+        echo "✅ Primary cluster healthy"
     else
-        echo "❌ Cluster A unhealthy - checking logs..."
-        docker logs cluster-a-broker-1 --tail 5
+        echo "❌ Primary cluster unhealthy - checking logs..."
+        docker logs primary-broker-0 --tail 5
     fi
     echo ""
 
-    # Check Cluster B
-    echo "Cluster B detailed status:"
-    if docker exec cluster-b-broker-1 rpk cluster info --brokers cluster-b-broker-1:9092 2>/dev/null; then
-        echo "✅ Cluster B healthy"
+    # Check Secondary Cluster
+    echo "Secondary cluster detailed status:"
+    if docker exec secondary-broker-0 rpk cluster info --brokers secondary-broker-0:9092 2>/dev/null; then
+        echo "✅ Secondary cluster healthy"
     else
-        echo "❌ Cluster B unhealthy - checking logs..."
-        docker logs cluster-b-broker-1 --tail 5
+        echo "❌ Secondary cluster unhealthy - checking logs..."
+        docker logs secondary-broker-0 --tail 5
     fi
     echo ""
 
@@ -37,14 +37,14 @@ check_health() {
     if docker ps | grep -q envoy-proxy; then
         echo "✅ Envoy container is running"
         echo "Testing Envoy connectivity to clusters:"
-        echo "Cluster A reachable from Envoy:"
-        if timeout 3 docker exec envoy-proxy /bin/bash -c "echo > /dev/tcp/cluster-a-broker-1/9092" 2>/dev/null; then
+        echo "Primary cluster reachable from Envoy:"
+        if timeout 3 docker exec envoy-proxy /bin/bash -c "echo > /dev/tcp/primary-broker-0/9092" 2>/dev/null; then
             echo "✅ Reachable"
         else
             echo "❌ Unreachable"
         fi
-        echo "Cluster B reachable from Envoy:"
-        if timeout 3 docker exec envoy-proxy /bin/bash -c "echo > /dev/tcp/cluster-b-broker-1/9092" 2>/dev/null; then
+        echo "Secondary cluster reachable from Envoy:"
+        if timeout 3 docker exec envoy-proxy /bin/bash -c "echo > /dev/tcp/secondary-broker-0/9092" 2>/dev/null; then
             echo "✅ Reachable"
         else
             echo "❌ Unreachable"
@@ -55,20 +55,6 @@ check_health() {
     fi
     echo ""
 
-    # Envoy cluster and routing stats
-    echo "Envoy cluster and routing information:"
-    echo "=== Cluster Health Status ==="
-    curl -s http://localhost:9901/stats | grep -E "redpanda_cluster\.membership_(healthy|total)" | sort
-    echo ""
-    echo "=== Active Connections per Endpoint ==="
-    curl -s http://localhost:9901/stats | grep -E "redpanda_cluster\.cluster-[ab]-broker-1.*cx_active" | sort
-    echo ""
-    echo "=== Health Check Status ==="
-    curl -s http://localhost:9901/stats | grep -E "redpanda_cluster\.health_check\.(attempt|success|failure)" | sort
-    echo ""
-    echo "=== Priority Levels ==="
-    curl -s http://localhost:9901/stats | grep -E "redpanda_cluster\.priority_[01]\." | head -6
-    echo ""
 }
 
 # Function to show real-time routing information
@@ -93,10 +79,10 @@ stats_output=$(curl -s http://localhost:9901/stats 2>/dev/null)
 cluster_a_health="UNKNOWN"
 cluster_a_routing="NO"
 
-if echo "$clusters_output" | grep -A 5 "cluster-a-broker-1" | grep -q "health_flags::healthy"; then
+if echo "$clusters_output" | grep -A 5 "primary-broker-0" | grep -q "health_flags::healthy"; then
     cluster_a_health="HEALTHY"
     cluster_a_routing="YES"
-elif echo "$clusters_output" | grep -A 5 "cluster-a-broker-1" | grep -q "health_flags"; then
+elif echo "$clusters_output" | grep -A 5 "primary-broker-0" | grep -q "health_flags"; then
     cluster_a_health="UNHEALTHY"
 fi
 
@@ -106,21 +92,21 @@ fi
 cluster_b_health="UNKNOWN"
 cluster_b_routing="NO"
 
-if echo "$clusters_output" | grep -A 5 "cluster-b-broker-1" | grep -q "health_flags::healthy"; then
+if echo "$clusters_output" | grep -A 5 "secondary-broker-0" | grep -q "health_flags::healthy"; then
     cluster_b_health="HEALTHY"
     # Only route to cluster B if cluster A is unhealthy (priority routing)
     if [ "$cluster_a_health" != "HEALTHY" ]; then
         cluster_b_routing="YES"
     fi
-elif echo "$clusters_output" | grep -A 5 "cluster-b-broker-1" | grep -q "health_flags"; then
+elif echo "$clusters_output" | grep -A 5 "secondary-broker-0" | grep -q "health_flags"; then
     cluster_b_health="UNHEALTHY"
 fi
 
 # Connection logic removed - ROUTING_STATUS column provides sufficient information
 
 # Display the table
-printf "%-20s %-15s %-12s %-15s\n" "cluster-a-broker-1" "0 (Primary)" "$cluster_a_health" "$cluster_a_routing"
-printf "%-20s %-15s %-12s %-15s\n" "cluster-b-broker-1" "1 (Secondary)" "$cluster_b_health" "$cluster_b_routing"
+printf "%-20s %-15s %-12s %-15s\n" "primary-broker-0" "0 (Primary)" "$cluster_a_health" "$cluster_a_routing"
+printf "%-20s %-15s %-12s %-15s\n" "secondary-broker-0" "1 (Secondary)" "$cluster_b_health" "$cluster_b_routing"
 
 printf "\n💡 Priority routing: Traffic goes to Priority 0 first, then Priority 1 if Priority 0 is unhealthy\n"
 EOF
@@ -136,38 +122,38 @@ EOF
 
 # Function to simulate cluster failure
 simulate_cluster_a_failure() {
-    echo "💥 Simulating Cluster A failure (stopping cluster-a-broker-1)..."
-    docker stop cluster-a-broker-1
+    echo "💥 Simulating Primary cluster failure (stopping primary-broker-0)..."
+    docker stop primary-broker-0
     sleep 5
-    echo "🔄 Envoy should now route to Cluster B"
+    echo "🔄 Envoy should now route to Secondary cluster"
     check_health
 }
 
 # Function to restore cluster
 restore_cluster_a() {
-    echo "🔄 Restoring Cluster A..."
-    docker start cluster-a-broker-1
+    echo "🔄 Restoring Primary cluster..."
+    docker start primary-broker-0
     sleep 10
-    echo "✅ Cluster A restored - Envoy should detect and route back"
+    echo "✅ Primary cluster restored - Envoy should detect and route back"
     check_health
 }
 
 # Function to simulate secondary cluster failure
 simulate_cluster_b_failure() {
-    echo "💥 Simulating Cluster B (secondary) failure (stopping cluster-b-broker-1)..."
-    docker stop cluster-b-broker-1
+    echo "💥 Simulating Secondary cluster failure (stopping secondary-broker-0)..."
+    docker stop secondary-broker-0
     sleep 5
-    echo "🔄 Cluster B is down - traffic should remain on Cluster A (no impact expected)"
-    echo "⚠️  Note: Cluster B data is now independent from Cluster A"
+    echo "🔄 Secondary cluster is down - traffic should remain on Primary cluster (no impact expected)"
+    echo "⚠️  Note: Secondary cluster data is now independent from Primary cluster"
     check_health
 }
 
 # Function to restore secondary cluster
 restore_cluster_b() {
-    echo "🔄 Restoring Cluster B..."
-    docker start cluster-b-broker-1
+    echo "🔄 Restoring Secondary cluster..."
+    docker start secondary-broker-0
     sleep 10
-    echo "✅ Cluster B restored - available for failover again"
+    echo "✅ Secondary cluster restored - available for failover again"
     check_health
 }
 
