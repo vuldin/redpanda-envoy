@@ -68,47 +68,103 @@ show_routing_info() {
 printf "\n🚀 ENVOY ROUTING STATUS\n"
 printf "=====================\n\n"
 
-printf "%-20s %-15s %-12s %-15s\n" "CLUSTER" "PRIORITY" "HEALTH" "ROUTING_STATUS"
-printf "%-20s %-15s %-12s %-15s\n" "-------" "--------" "------" "--------------"
-
 # Get cluster info and stats
 clusters_output=$(curl -s http://localhost:9901/clusters 2>/dev/null)
 stats_output=$(curl -s http://localhost:9901/stats 2>/dev/null)
 
-# Parse cluster A info
-cluster_a_health="UNKNOWN"
-cluster_a_routing="NO"
-
-if echo "$clusters_output" | grep -A 5 "primary-broker-0" | grep -q "health_flags::healthy"; then
-    cluster_a_health="HEALTHY"
-    cluster_a_routing="YES"
-elif echo "$clusters_output" | grep -A 5 "primary-broker-0" | grep -q "health_flags"; then
-    cluster_a_health="UNHEALTHY"
-fi
-
-# Connection logic removed - ROUTING_STATUS column provides sufficient information
-
-# Parse cluster B info
-cluster_b_health="UNKNOWN"
-cluster_b_routing="NO"
-
-if echo "$clusters_output" | grep -A 5 "secondary-broker-0" | grep -q "health_flags::healthy"; then
-    cluster_b_health="HEALTHY"
-    # Only route to cluster B if cluster A is unhealthy (priority routing)
-    if [ "$cluster_a_health" != "HEALTHY" ]; then
-        cluster_b_routing="YES"
+# Function to get broker health status
+get_broker_health() {
+    local broker_name="$1"
+    if echo "$clusters_output" | grep -A 10 "$broker_name" | grep -q "health_flags::healthy"; then
+        echo "✅ HEALTHY"
+    elif echo "$clusters_output" | grep -A 10 "$broker_name" | grep -q "health_flags::unhealthy"; then
+        echo "❌ UNHEALTHY"
+    elif echo "$clusters_output" | grep -A 10 "$broker_name" | grep -q "health_flags::timeout"; then
+        echo "⏰ TIMEOUT"
+    elif echo "$clusters_output" | grep -A 10 "$broker_name" | grep -q "health_flags::failed_active_hc"; then
+        echo "🔥 FAILED_HC"
+    else
+        echo "❓ UNKNOWN"
     fi
-elif echo "$clusters_output" | grep -A 5 "secondary-broker-0" | grep -q "health_flags"; then
-    cluster_b_health="UNHEALTHY"
+}
+
+# Function to calculate cluster health
+calculate_cluster_health() {
+    local broker0_status="$1"
+    local broker1_status="$2"
+    local broker2_status="$3"
+
+    local healthy_count=0
+    [[ "$broker0_status" == *"HEALTHY"* ]] && healthy_count=$((healthy_count + 1))
+    [[ "$broker1_status" == *"HEALTHY"* ]] && healthy_count=$((healthy_count + 1))
+    [[ "$broker2_status" == *"HEALTHY"* ]] && healthy_count=$((healthy_count + 1))
+
+    if [ $healthy_count -eq 3 ]; then
+        echo "🟢 HEALTHY (3/3)"
+    elif [ $healthy_count -ge 2 ]; then
+        echo "🟡 DEGRADED ($healthy_count/3)"
+    elif [ $healthy_count -eq 1 ]; then
+        echo "🟠 CRITICAL (1/3)"
+    else
+        echo "🔴 FAILED (0/3)"
+    fi
+}
+
+# Get individual broker health
+primary_broker_0_health=$(get_broker_health "primary-broker-0")
+primary_broker_1_health=$(get_broker_health "primary-broker-1")
+primary_broker_2_health=$(get_broker_health "primary-broker-2")
+
+secondary_broker_0_health=$(get_broker_health "secondary-broker-0")
+secondary_broker_1_health=$(get_broker_health "secondary-broker-1")
+secondary_broker_2_health=$(get_broker_health "secondary-broker-2")
+
+# Calculate overall cluster health
+primary_cluster_health=$(calculate_cluster_health "$primary_broker_0_health" "$primary_broker_1_health" "$primary_broker_2_health")
+secondary_cluster_health=$(calculate_cluster_health "$secondary_broker_0_health" "$secondary_broker_1_health" "$secondary_broker_2_health")
+
+# Determine active cluster (which cluster is receiving traffic)
+active_cluster="❓ UNKNOWN"
+primary_healthy_count=$(echo "$primary_cluster_health" | grep -o '[0-9]/3' | cut -d'/' -f1)
+if [ -z "$primary_healthy_count" ]; then primary_healthy_count=0; fi
+
+if [ "$primary_healthy_count" -ge 2 ]; then
+    active_cluster="🎯 PRIMARY"
+else
+    active_cluster="🎯 SECONDARY"
 fi
 
-# Connection logic removed - ROUTING_STATUS column provides sufficient information
+printf "📊 CLUSTER OVERVIEW\n"
+printf "==================\n"
+printf "%-22s %-20s %-10s\n" "CLUSTER" "OVERALL_HEALTH" "ACTIVE"
+printf "%-22s %-20s %-10s\n" "----------------------" "--------------------" "----------"
+printf "%-22s %-20s %-10s\n" "Primary (Priority 0)" "$primary_cluster_health" "$([[ "$active_cluster" == *"PRIMARY"* ]] && echo "✅ YES" || echo "❌ NO")"
+printf "%-22s %-20s %-10s\n" "Secondary (Priority 1)" "$secondary_cluster_health" "$([[ "$active_cluster" == *"SECONDARY"* ]] && echo "✅ YES" || echo "❌ NO")"
 
-# Display the table
-printf "%-20s %-15s %-12s %-15s\n" "primary-broker-0" "0 (Primary)" "$cluster_a_health" "$cluster_a_routing"
-printf "%-20s %-15s %-12s %-15s\n" "secondary-broker-0" "1 (Secondary)" "$cluster_b_health" "$cluster_b_routing"
+printf "\n📋 INDIVIDUAL BROKER DETAILS\n"
+printf "============================\n"
+printf "%-20s %-12s %-15s\n" "BROKER" "CLUSTER" "HEALTH"
+printf "%-20s %-12s %-15s\n" "--------------------" "------------" "---------------"
+printf "%-20s %-12s %-15s\n" "primary-broker-0" "Primary" "$primary_broker_0_health"
+printf "%-20s %-12s %-15s\n" "primary-broker-1" "Primary" "$primary_broker_1_health"
+printf "%-20s %-12s %-15s\n" "primary-broker-2" "Primary" "$primary_broker_2_health"
+printf "%-20s %-12s %-15s\n" "secondary-broker-0" "Secondary" "$secondary_broker_0_health"
+printf "%-20s %-12s %-15s\n" "secondary-broker-1" "Secondary" "$secondary_broker_1_health"
+printf "%-20s %-12s %-15s\n" "secondary-broker-2" "Secondary" "$secondary_broker_2_health"
 
-printf "\n💡 Priority routing: Traffic goes to Priority 0 first, then Priority 1 if Priority 0 is unhealthy\n"
+printf "\n💡 FAILOVER LOGIC\n"
+printf "=================\n"
+printf "• Traffic routes to PRIMARY cluster when ≥2 brokers healthy\n"
+printf "• Traffic fails over to SECONDARY cluster when <2 primary brokers healthy\n"
+printf "• Current active cluster: %s\n" "$active_cluster"
+
+printf "\n🔄 HEALTH CHECK STATUS\n"
+printf "=====================\n"
+if echo "$clusters_output" | grep -q "redpanda_cluster"; then
+    printf "✅ Envoy health checks running\n"
+else
+    printf "❌ Envoy health checks not found\n"
+fi
 EOF
 
     chmod +x /tmp/envoy_routing_display.sh
@@ -122,8 +178,8 @@ EOF
 
 # Function to simulate cluster failure
 simulate_cluster_a_failure() {
-    echo "💥 Simulating Primary cluster failure (stopping primary-broker-0)..."
-    docker stop primary-broker-0
+    echo "💥 Simulating Primary cluster failure (stopping all 3 primary brokers)..."
+    docker stop primary-broker-0 primary-broker-1 primary-broker-2
     sleep 5
     echo "🔄 Envoy should now route to Secondary cluster"
     check_health
@@ -131,8 +187,8 @@ simulate_cluster_a_failure() {
 
 # Function to restore cluster
 restore_cluster_a() {
-    echo "🔄 Restoring Primary cluster..."
-    docker start primary-broker-0
+    echo "🔄 Restoring Primary cluster (starting all 3 primary brokers)..."
+    docker start primary-broker-0 primary-broker-1 primary-broker-2
     sleep 10
     echo "✅ Primary cluster restored - Envoy should detect and route back"
     check_health
@@ -140,8 +196,8 @@ restore_cluster_a() {
 
 # Function to simulate secondary cluster failure
 simulate_cluster_b_failure() {
-    echo "💥 Simulating Secondary cluster failure (stopping secondary-broker-0)..."
-    docker stop secondary-broker-0
+    echo "💥 Simulating Secondary cluster failure (stopping all 3 secondary brokers)..."
+    docker stop secondary-broker-0 secondary-broker-1 secondary-broker-2
     sleep 5
     echo "🔄 Secondary cluster is down - traffic should remain on Primary cluster (no impact expected)"
     echo "⚠️  Note: Secondary cluster data is now independent from Primary cluster"
@@ -150,8 +206,8 @@ simulate_cluster_b_failure() {
 
 # Function to restore secondary cluster
 restore_cluster_b() {
-    echo "🔄 Restoring Secondary cluster..."
-    docker start secondary-broker-0
+    echo "🔄 Restoring Secondary cluster (starting all 3 secondary brokers)..."
+    docker start secondary-broker-0 secondary-broker-1 secondary-broker-2
     sleep 10
     echo "✅ Secondary cluster restored - available for failover again"
     check_health

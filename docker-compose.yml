@@ -6,19 +6,11 @@ services:
     command:
       - redpanda
       - start
-      - --node-id=1
-      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
-      - --advertise-kafka-addr internal://primary-broker-0:9092,external://localhost:19092
-      - --pandaproxy-addr internal://0.0.0.0:8082,external://0.0.0.0:18082
-      - --advertise-pandaproxy-addr internal://primary-broker-0:8082,external://localhost:18082
-      - --schema-registry-addr internal://0.0.0.0:8081,external://0.0.0.0:18081
-      - --rpc-addr primary-broker-0:33145
-      - --advertise-rpc-addr primary-broker-0:33145
-      - --seeds primary-broker-0:33145,primary-broker-1:33145,primary-broker-2:33145
-      - --smp 1
-      - --memory 1G
-      - --mode dev-container
-      - --default-log-level=info
+      - --smp=1
+      - --memory=1G
+      - --overprovisioned
+    volumes:
+      - ./redpanda-config/primary-broker-0:/etc/redpanda
     ports:
       - "19092:19092"
       - "18081:18081"
@@ -38,19 +30,11 @@ services:
     command:
       - redpanda
       - start
-      - --node-id=2
-      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19093
-      - --advertise-kafka-addr internal://primary-broker-1:9092,external://localhost:19093
-      - --pandaproxy-addr internal://0.0.0.0:8082,external://0.0.0.0:18083
-      - --advertise-pandaproxy-addr internal://primary-broker-1:8082,external://localhost:18083
-      - --schema-registry-addr internal://0.0.0.0:8081,external://0.0.0.0:18084
-      - --rpc-addr primary-broker-1:33145
-      - --advertise-rpc-addr primary-broker-1:33145
-      - --seeds primary-broker-0:33145,primary-broker-1:33145,primary-broker-2:33145
-      - --smp 1
-      - --memory 1G
-      - --mode dev-container
-      - --default-log-level=info
+      - --smp=1
+      - --memory=1G
+      - --overprovisioned
+    volumes:
+      - ./redpanda-config/primary-broker-1:/etc/redpanda
     ports:
       - "19093:19093"
       - "18083:18083"
@@ -70,19 +54,11 @@ services:
     command:
       - redpanda
       - start
-      - --node-id=3
-      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19094
-      - --advertise-kafka-addr internal://primary-broker-2:9092,external://localhost:19094
-      - --pandaproxy-addr internal://0.0.0.0:8082,external://0.0.0.0:18085
-      - --advertise-pandaproxy-addr internal://primary-broker-2:8082,external://localhost:18085
-      - --schema-registry-addr internal://0.0.0.0:8081,external://0.0.0.0:18086
-      - --rpc-addr primary-broker-2:33145
-      - --advertise-rpc-addr primary-broker-2:33145
-      - --seeds primary-broker-0:33145,primary-broker-1:33145,primary-broker-2:33145
-      - --smp 1
-      - --memory 1G
-      - --mode dev-container
-      - --default-log-level=info
+      - --smp=1
+      - --memory=1G
+      - --overprovisioned
+    volumes:
+      - ./redpanda-config/primary-broker-2:/etc/redpanda
     ports:
       - "19094:19094"
       - "18085:18085"
@@ -103,19 +79,11 @@ services:
     command:
       - redpanda
       - start
-      - --node-id=1
-      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:29092
-      - --advertise-kafka-addr internal://secondary-broker-0:9092,external://localhost:29092
-      - --pandaproxy-addr internal://0.0.0.0:8082,external://0.0.0.0:28082
-      - --advertise-pandaproxy-addr internal://secondary-broker-0:8082,external://localhost:28082
-      - --schema-registry-addr internal://0.0.0.0:8081,external://0.0.0.0:28081
-      - --rpc-addr secondary-broker-0:33145
-      - --advertise-rpc-addr secondary-broker-0:33145
-      - --seeds secondary-broker-0:33145,secondary-broker-1:33145,secondary-broker-2:33145
-      - --smp 1
-      - --memory 1G
-      - --mode dev-container
-      - --default-log-level=info
+      - --smp=1
+      - --memory=1G
+      - --overprovisioned
+    volumes:
+      - ./redpanda-config/secondary-broker-0:/etc/redpanda
     ports:
       - "29092:29092"
       - "28081:28081"
@@ -135,19 +103,11 @@ services:
     command:
       - redpanda
       - start
-      - --node-id=2
-      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:29093
-      - --advertise-kafka-addr internal://secondary-broker-1:9092,external://localhost:29093
-      - --pandaproxy-addr internal://0.0.0.0:8082,external://0.0.0.0:28083
-      - --advertise-pandaproxy-addr internal://secondary-broker-1:8082,external://localhost:28083
-      - --schema-registry-addr internal://0.0.0.0:8081,external://0.0.0.0:28084
-      - --rpc-addr secondary-broker-1:33145
-      - --advertise-rpc-addr secondary-broker-1:33145
-      - --seeds secondary-broker-0:33145,secondary-broker-1:33145,secondary-broker-2:33145
-      - --smp 1
-      - --memory 1G
-      - --mode dev-container
-      - --default-log-level=info
+      - --smp=1
+      - --memory=1G
+      - --overprovisioned
+    volumes:
+      - ./redpanda-config/secondary-broker-1:/etc/redpanda
     ports:
       - "29093:29093"
       - "28083:28083"
@@ -167,19 +127,11 @@ services:
     command:
       - redpanda
       - start
-      - --node-id=3
-      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:29094
-      - --advertise-kafka-addr internal://secondary-broker-2:9092,external://localhost:29094
-      - --pandaproxy-addr internal://0.0.0.0:8082,external://0.0.0.0:28085
-      - --advertise-pandaproxy-addr internal://secondary-broker-2:8082,external://localhost:28085
-      - --schema-registry-addr internal://0.0.0.0:8081,external://0.0.0.0:28086
-      - --rpc-addr secondary-broker-2:33145
-      - --advertise-rpc-addr secondary-broker-2:33145
-      - --seeds secondary-broker-0:33145,secondary-broker-1:33145,secondary-broker-2:33145
-      - --smp 1
-      - --memory 1G
-      - --mode dev-container
-      - --default-log-level=info
+      - --smp=1
+      - --memory=1G
+      - --overprovisioned
+    volumes:
+      - ./redpanda-config/secondary-broker-2:/etc/redpanda
     ports:
       - "29094:29094"
       - "28085:28085"

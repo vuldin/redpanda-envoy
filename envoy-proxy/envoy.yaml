@@ -19,7 +19,7 @@ static_resources:
         typed_config:
           "@type": type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy
           stat_prefix: broker_0_tcp
-          cluster: redpanda_broker_0
+          cluster: redpanda_cluster
           access_log:
           - name: envoy.access_loggers.stdout
             typed_config:
@@ -37,7 +37,7 @@ static_resources:
         typed_config:
           "@type": type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy
           stat_prefix: broker_1_tcp
-          cluster: redpanda_broker_1
+          cluster: redpanda_cluster
           access_log:
           - name: envoy.access_loggers.stdout
             typed_config:
@@ -55,14 +55,14 @@ static_resources:
         typed_config:
           "@type": type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy
           stat_prefix: broker_2_tcp
-          cluster: redpanda_broker_2
+          cluster: redpanda_cluster
           access_log:
           - name: envoy.access_loggers.stdout
             typed_config:
               "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
 
   clusters:
-  - name: redpanda_broker_0
+  - name: redpanda_cluster
     connect_timeout: 5s
     type: STRICT_DNS
     lb_policy: ROUND_ROBIN
@@ -72,13 +72,14 @@ static_resources:
       interval_jitter: 1s
       unhealthy_threshold: 3
       healthy_threshold: 2
-      tcp_health_check: {}
+      http_health_check:
+        path: /schemas/types
       no_traffic_interval: 10s
       unhealthy_interval: 10s
       unhealthy_edge_interval: 30s
       healthy_edge_interval: 10s
     load_assignment:
-      cluster_name: redpanda_broker_0
+      cluster_name: redpanda_cluster
       endpoints:
       - priority: 0
         lb_endpoints:
@@ -87,6 +88,22 @@ static_resources:
               socket_address:
                 address: primary-broker-0
                 port_value: 9092
+            health_check_config:
+              port_value: 8081
+        - endpoint:
+            address:
+              socket_address:
+                address: primary-broker-1
+                port_value: 9092
+            health_check_config:
+              port_value: 8081
+        - endpoint:
+            address:
+              socket_address:
+                address: primary-broker-2
+                port_value: 9092
+            health_check_config:
+              port_value: 8081
       - priority: 1
         lb_endpoints:
         - endpoint:
@@ -94,90 +111,22 @@ static_resources:
               socket_address:
                 address: secondary-broker-0
                 port_value: 9092
-    common_lb_config:
-      healthy_panic_threshold:
-        value: 0.0
-    outlier_detection:
-      consecutive_5xx: 3
-      consecutive_gateway_failure: 3
-      interval: 10s
-      base_ejection_time: 30s
-      max_ejection_percent: 50
-
-  - name: redpanda_broker_1
-    connect_timeout: 5s
-    type: STRICT_DNS
-    lb_policy: ROUND_ROBIN
-    health_checks:
-    - timeout: 3s
-      interval: 5s
-      interval_jitter: 1s
-      unhealthy_threshold: 3
-      healthy_threshold: 2
-      tcp_health_check: {}
-      no_traffic_interval: 10s
-      unhealthy_interval: 10s
-      unhealthy_edge_interval: 30s
-      healthy_edge_interval: 10s
-    load_assignment:
-      cluster_name: redpanda_broker_1
-      endpoints:
-      - priority: 0
-        lb_endpoints:
-        - endpoint:
-            address:
-              socket_address:
-                address: primary-broker-1
-                port_value: 9092
-      - priority: 1
-        lb_endpoints:
+            health_check_config:
+              port_value: 8081
         - endpoint:
             address:
               socket_address:
                 address: secondary-broker-1
                 port_value: 9092
-    common_lb_config:
-      healthy_panic_threshold:
-        value: 0.0
-    outlier_detection:
-      consecutive_5xx: 3
-      consecutive_gateway_failure: 3
-      interval: 10s
-      base_ejection_time: 30s
-      max_ejection_percent: 50
-
-  - name: redpanda_broker_2
-    connect_timeout: 5s
-    type: STRICT_DNS
-    lb_policy: ROUND_ROBIN
-    health_checks:
-    - timeout: 3s
-      interval: 5s
-      interval_jitter: 1s
-      unhealthy_threshold: 3
-      healthy_threshold: 2
-      tcp_health_check: {}
-      no_traffic_interval: 10s
-      unhealthy_interval: 10s
-      unhealthy_edge_interval: 30s
-      healthy_edge_interval: 10s
-    load_assignment:
-      cluster_name: redpanda_broker_2
-      endpoints:
-      - priority: 0
-        lb_endpoints:
-        - endpoint:
-            address:
-              socket_address:
-                address: primary-broker-2
-                port_value: 9092
-      - priority: 1
-        lb_endpoints:
+            health_check_config:
+              port_value: 8081
         - endpoint:
             address:
               socket_address:
                 address: secondary-broker-2
                 port_value: 9092
+            health_check_config:
+              port_value: 8081
     common_lb_config:
       healthy_panic_threshold:
         value: 0.0
