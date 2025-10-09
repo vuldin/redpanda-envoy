@@ -147,7 +147,7 @@ services:
 
   # Envoy Proxy for failover
   envoy:
-    image: envoyproxy/envoy:v1.31-latest
+    image: envoyproxy/envoy:contrib-v1.31-latest
     container_name: envoy-proxy
     ports:
       - "9092:9092"
@@ -178,15 +178,30 @@ services:
       retries: 3
       start_period: 10s
 
-  # Test client
-  test-client:
+  # RPK client
+  rpk-client:
     image: redpandadata/redpanda:latest
-    container_name: test-client
+    container_name: rpk-client
     entrypoint: ["/bin/bash"]
     command: ["-c", "tail -f /dev/null"]
     volumes:
       - ./test-producer.sh:/test-producer.sh
       - ./test-consumer.sh:/test-consumer.sh
+    networks:
+      - redpanda-net
+    depends_on:
+      - envoy
+    restart: unless-stopped
+
+  # Python client
+  python-client:
+    image: python:3.11-slim
+    container_name: python-client
+    command: ["/bin/bash", "-c", "pip install kafka-python && tail -f /dev/null"]
+    volumes:
+      - ./python-producer.py:/app/python-producer.py
+      - ./python-consumer.py:/app/python-consumer.py
+    working_dir: /app
     networks:
       - redpanda-net
     depends_on:

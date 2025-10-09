@@ -245,10 +245,10 @@ case "$1" in
         echo "🎯 Demo ready! Run the following in separate terminals:"
         echo ""
         echo "   # Start producer:"
-        echo "   docker exec -it test-client bash /test-producer.sh"
+        echo "   docker exec -it rpk-client bash /test-producer.sh"
         echo ""
         echo "   # Start consumer:"
-        echo "   docker exec -it test-client bash /test-consumer.sh"
+        echo "   docker exec -it rpk-client bash /test-consumer.sh"
         echo ""
         echo "Then run: ./failover-demo.sh fail-primary"
         ;;

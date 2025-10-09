@@ -24,7 +24,8 @@ primary-broker-0       secondary-broker-0
 - **primary-broker-0/1/2**: Primary Redpanda cluster (3 brokers)
 - **secondary-broker-0/1/2**: Secondary Redpanda cluster (3 brokers)
 - **envoy-proxy**: TCP proxy listening on port 9092, routes to clusters with priority-based failover
-- **test-client**: Container with RPK-based test scripts
+- **rpk-client**: Container with RPK-based test scripts
+- **python-client**: Python 3.11 container with kafka-python library for Python-based testing
 
 ### Configuration Files
 - **docker-compose.yml**: Complete environment setup with volume mounts
@@ -32,6 +33,8 @@ primary-broker-0       secondary-broker-0
 - **envoy-proxy/envoy.yaml**: Envoy TCP proxy with Schema Registry health checks
 - **test-producer.sh**: RPK-based producer connecting via Envoy
 - **test-consumer.sh**: RPK-based consumer with retry logic and proper signal handling
+- **python-producer.py**: Python producer using kafka-python library
+- **python-consumer.py**: Python consumer using kafka-python library
 - **setup-topics.sh**: Creates topics on both clusters
 - **failover-demo.sh**: Main orchestration script with multiple commands
 
@@ -60,11 +63,20 @@ primary-broker-0       secondary-broker-0
   - Go-based yq: `yq '.redpanda.recovery_mode_enabled = true' -i redpanda-config/[broker]/redpanda.yaml`
   - Python-based yq: `yq -y '.redpanda.recovery_mode_enabled = true' file.yaml > temp.yaml && mv temp.yaml file.yaml`
 
-### Test Client Container
+### Test Client Containers
+
+**RPK Test Client:**
 - Uses Redpanda image with overridden entrypoint (`/bin/bash`)
-- RPK-based scripts (no Python dependencies)
+- RPK-based scripts (no external dependencies)
 - Consumer script has proper signal handling for Ctrl+C
 - Producer sends messages every 2 seconds with timestamps
+
+**Python Test Client:**
+- Python 3.11-slim image
+- Uses kafka-python library (installed on container start)
+- Producer: Sends messages every 2 seconds with delivery callbacks
+- Consumer: Auto-commit enabled, starts from earliest offset if no previous offset
+- Demonstrates real-world client behavior and failover handling
 
 ## Common Commands
 
@@ -81,9 +93,13 @@ primary-broker-0       secondary-broker-0
 ./failover-demo.sh fail-primary
 ./failover-demo.sh restore-primary
 
-# Run test clients
-docker exec -it test-client bash /test-producer.sh
-docker exec -it test-client bash /test-consumer.sh
+# Run test clients (RPK-based)
+docker exec -it rpk-client bash /test-producer.sh
+docker exec -it rpk-client bash /test-consumer.sh
+
+# Run Python clients
+docker exec -it python-client python3 python-producer.py
+docker exec -it python-client python3 python-consumer.py
 
 # Monitor services
 docker logs envoy-proxy -f
