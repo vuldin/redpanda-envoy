@@ -1,6 +1,6 @@
 redpanda:
     data_directory: /var/lib/redpanda/data
-    node_id: 1
+    node_id: 3
     seed_servers:
         - host:
             address: primary-broker-0
@@ -18,7 +18,7 @@ redpanda:
             address: primary-broker-4
             port: 33145
     rpc_server:
-        address: primary-broker-1
+        address: primary-broker-3
         port: 33145
     kafka_api:
         - address: 0.0.0.0
@@ -28,33 +28,33 @@ redpanda:
           port: 9091
           name: local
         - address: 0.0.0.0
-          port: 19093
+          port: 19095
           name: external
     kafka_api_tls:
         - name: internal
           enabled: true
-          cert_file: /etc/redpanda/certs/primary-broker-1.crt
-          key_file: /etc/redpanda/certs/primary-broker-1.key
+          cert_file: /etc/redpanda/certs/primary-broker-3.crt
+          key_file: /etc/redpanda/certs/primary-broker-3.key
           truststore_file: /etc/redpanda/certs/ca.crt
           require_client_auth: false
         - name: external
           enabled: true
-          cert_file: /etc/redpanda/certs/primary-broker-1.crt
-          key_file: /etc/redpanda/certs/primary-broker-1.key
+          cert_file: /etc/redpanda/certs/primary-broker-3.crt
+          key_file: /etc/redpanda/certs/primary-broker-3.key
           truststore_file: /etc/redpanda/certs/ca.crt
           require_client_auth: false
     advertised_rpc_api:
-        address: primary-broker-1
+        address: primary-broker-3
         port: 33145
     advertised_kafka_api:
         - address: envoy
-          port: 9093
+          port: 9095
           name: internal
-        - address: primary-broker-1
+        - address: primary-broker-3
           port: 9091
           name: local
         - address: localhost
-          port: 19093
+          port: 19095
           name: external
     developer_mode: true
     auto_create_topics_enabled: true
@@ -73,14 +73,14 @@ pandaproxy:
           port: 8082
           name: internal
         - address: 0.0.0.0
-          port: 18083
+          port: 18087
           name: external
     advertised_pandaproxy_api:
-        - address: primary-broker-1
+        - address: primary-broker-3
           port: 8082
           name: internal
         - address: localhost
-          port: 18083
+          port: 18087
           name: external
 schema_registry:
     schema_registry_api:
@@ -88,7 +88,7 @@ schema_registry:
           port: 8081
           name: internal
         - address: 0.0.0.0
-          port: 18084
+          port: 18088
           name: external
 schema_registry_client:
     brokers:

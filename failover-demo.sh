@@ -13,7 +13,7 @@ check_health() {
 
     # Check container status first
     echo "Container status:"
-    docker ps --format "table {{.Names}}\t{{.Status}}" | grep -E "(primary-broker-0|secondary-broker-0|envoy-proxy)"
+    docker ps --format "table {{.Names}}\t{{.Status}}" | grep -E "(primary-broker-|secondary-broker-|envoy-proxy)"
     echo ""
 
     # Check Primary Cluster
@@ -72,102 +72,95 @@ show_routing_info() {
 printf "\n🚀 ENVOY ROUTING STATUS\n"
 printf "=====================\n\n"
 
-# Get cluster info and stats
+# Get cluster info from Envoy and aggregator
 clusters_output=$(curl -s http://localhost:9901/clusters 2>/dev/null)
-stats_output=$(curl -s http://localhost:9901/stats 2>/dev/null)
+primary_agg=$(curl -s http://localhost:8080/status 2>/dev/null)
+secondary_agg=$(curl -s http://localhost:8082/status 2>/dev/null)
 
-# Function to get broker health status
-get_broker_health() {
-    local broker_name="$1"
-    if echo "$clusters_output" | grep -A 10 "$broker_name" | grep -q "health_flags::healthy"; then
-        echo "✅ HEALTHY"
-    elif echo "$clusters_output" | grep -A 10 "$broker_name" | grep -q "health_flags::unhealthy"; then
-        echo "❌ UNHEALTHY"
-    elif echo "$clusters_output" | grep -A 10 "$broker_name" | grep -q "health_flags::timeout"; then
-        echo "⏰ TIMEOUT"
-    elif echo "$clusters_output" | grep -A 10 "$broker_name" | grep -q "health_flags::failed_active_hc"; then
-        echo "🔥 FAILED_HC"
-    else
-        echo "❓ UNKNOWN"
-    fi
+# Parse aggregator status
+parse_agg_field() {
+    echo "$1" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('$2',''))" 2>/dev/null
 }
 
-# Function to calculate cluster health
-calculate_cluster_health() {
-    local broker0_status="$1"
-    local broker1_status="$2"
-    local broker2_status="$3"
-
-    local healthy_count=0
-    [[ "$broker0_status" == *"HEALTHY"* ]] && healthy_count=$((healthy_count + 1))
-    [[ "$broker1_status" == *"HEALTHY"* ]] && healthy_count=$((healthy_count + 1))
-    [[ "$broker2_status" == *"HEALTHY"* ]] && healthy_count=$((healthy_count + 1))
-
-    if [ $healthy_count -eq 3 ]; then
-        echo "🟢 HEALTHY (3/3)"
-    elif [ $healthy_count -ge 2 ]; then
-        echo "🟡 DEGRADED ($healthy_count/3)"
-    elif [ $healthy_count -eq 1 ]; then
-        echo "🟠 CRITICAL (1/3)"
-    else
-        echo "🔴 FAILED (0/3)"
-    fi
+parse_broker_status() {
+    echo "$1" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('brokers',{}).get('$2','unknown'))" 2>/dev/null
 }
 
-# Get individual broker health
-primary_broker_0_health=$(get_broker_health "primary-broker-0")
-primary_broker_1_health=$(get_broker_health "primary-broker-1")
-primary_broker_2_health=$(get_broker_health "primary-broker-2")
+primary_healthy=$(parse_agg_field "$primary_agg" "healthy_count")
+primary_total=$(parse_agg_field "$primary_agg" "total")
+primary_quorum=$(parse_agg_field "$primary_agg" "has_quorum")
+secondary_healthy=$(parse_agg_field "$secondary_agg" "healthy_count")
+secondary_total=$(parse_agg_field "$secondary_agg" "total")
+secondary_quorum=$(parse_agg_field "$secondary_agg" "has_quorum")
 
-secondary_broker_0_health=$(get_broker_health "secondary-broker-0")
-secondary_broker_1_health=$(get_broker_health "secondary-broker-1")
-secondary_broker_2_health=$(get_broker_health "secondary-broker-2")
-
-# Calculate overall cluster health
-primary_cluster_health=$(calculate_cluster_health "$primary_broker_0_health" "$primary_broker_1_health" "$primary_broker_2_health")
-secondary_cluster_health=$(calculate_cluster_health "$secondary_broker_0_health" "$secondary_broker_1_health" "$secondary_broker_2_health")
-
-# Determine active cluster (which cluster is receiving traffic)
-active_cluster="❓ UNKNOWN"
-primary_healthy_count=$(echo "$primary_cluster_health" | grep -o '[0-9]/3' | cut -d'/' -f1)
-if [ -z "$primary_healthy_count" ]; then primary_healthy_count=0; fi
-
-if [ "$primary_healthy_count" -ge 2 ]; then
-    active_cluster="🎯 PRIMARY"
+# Determine cluster health display
+if [ "$primary_quorum" = "True" ]; then
+    if [ "$primary_healthy" = "$primary_total" ]; then
+        primary_health="🟢 HEALTHY ($primary_healthy/$primary_total)"
+    else
+        primary_health="🟡 DEGRADED ($primary_healthy/$primary_total, quorum OK)"
+    fi
 else
+    primary_health="🔴 QUORUM LOST ($primary_healthy/$primary_total)"
+fi
+
+if [ "$secondary_quorum" = "True" ]; then
+    if [ "$secondary_healthy" = "$secondary_total" ]; then
+        secondary_health="🟢 HEALTHY ($secondary_healthy/$secondary_total)"
+    else
+        secondary_health="🟡 DEGRADED ($secondary_healthy/$secondary_total, quorum OK)"
+    fi
+else
+    secondary_health="🔴 QUORUM LOST ($secondary_healthy/$secondary_total)"
+fi
+
+# Determine active cluster
+if [ "$primary_quorum" = "True" ]; then
+    active_cluster="🎯 PRIMARY"
+elif [ "$secondary_quorum" = "True" ]; then
     active_cluster="🎯 SECONDARY"
+else
+    active_cluster="❌ NONE (both clusters lost quorum)"
 fi
 
 printf "📊 CLUSTER OVERVIEW\n"
 printf "==================\n"
-printf "%-22s %-20s %-10s\n" "CLUSTER" "OVERALL_HEALTH" "ACTIVE"
-printf "%-22s %-20s %-10s\n" "----------------------" "--------------------" "----------"
-printf "%-22s %-20s %-10s\n" "Primary (Priority 0)" "$primary_cluster_health" "$([[ "$active_cluster" == *"PRIMARY"* ]] && echo "✅ YES" || echo "❌ NO")"
-printf "%-22s %-20s %-10s\n" "Secondary (Priority 1)" "$secondary_cluster_health" "$([[ "$active_cluster" == *"SECONDARY"* ]] && echo "✅ YES" || echo "❌ NO")"
+printf "%-22s %-40s %-10s\n" "CLUSTER" "OVERALL_HEALTH" "ACTIVE"
+printf "%-22s %-40s %-10s\n" "----------------------" "----------------------------------------" "----------"
+printf "%-22s %-40s %-10s\n" "Primary (Priority 0)" "$primary_health" "$([[ "$active_cluster" == *"PRIMARY"* ]] && echo "✅ YES" || echo "❌ NO")"
+printf "%-22s %-40s %-10s\n" "Secondary (Priority 1)" "$secondary_health" "$([[ "$active_cluster" == *"SECONDARY"* ]] && echo "✅ YES" || echo "❌ NO")"
 
-printf "\n📋 INDIVIDUAL BROKER DETAILS\n"
-printf "============================\n"
+printf "\n📋 INDIVIDUAL BROKER DETAILS (from health aggregator)\n"
+printf "=====================================================\n"
 printf "%-20s %-12s %-15s\n" "BROKER" "CLUSTER" "HEALTH"
 printf "%-20s %-12s %-15s\n" "--------------------" "------------" "---------------"
-printf "%-20s %-12s %-15s\n" "primary-broker-0" "Primary" "$primary_broker_0_health"
-printf "%-20s %-12s %-15s\n" "primary-broker-1" "Primary" "$primary_broker_1_health"
-printf "%-20s %-12s %-15s\n" "primary-broker-2" "Primary" "$primary_broker_2_health"
-printf "%-20s %-12s %-15s\n" "secondary-broker-0" "Secondary" "$secondary_broker_0_health"
-printf "%-20s %-12s %-15s\n" "secondary-broker-1" "Secondary" "$secondary_broker_1_health"
-printf "%-20s %-12s %-15s\n" "secondary-broker-2" "Secondary" "$secondary_broker_2_health"
+for i in 0 1 2 3 4; do
+    status=$(parse_broker_status "$primary_agg" "primary-broker-$i")
+    icon=$([[ "$status" == "healthy" ]] && echo "✅" || echo "❌")
+    printf "%-20s %-12s %-15s\n" "primary-broker-$i" "Primary" "$icon ${status^^}"
+done
+for i in 0 1 2; do
+    status=$(parse_broker_status "$secondary_agg" "secondary-broker-$i")
+    icon=$([[ "$status" == "healthy" ]] && echo "✅" || echo "❌")
+    printf "%-20s %-12s %-15s\n" "secondary-broker-$i" "Secondary" "$icon ${status^^}"
+done
 
-printf "\n💡 FAILOVER LOGIC\n"
-printf "=================\n"
-printf "• Traffic routes to PRIMARY cluster when ≥2 brokers healthy\n"
-printf "• Traffic fails over to SECONDARY cluster when <2 primary brokers healthy\n"
+printf "\n💡 FAILOVER LOGIC (majority-based, cluster-wide)\n"
+printf "=================================================\n"
+printf "• Health aggregator checks ALL brokers' Schema Registry every 2s\n"
+printf "• Primary quorum: ≥3/5 brokers healthy → Envoy routes to primary\n"
+printf "• Primary quorum lost: <3/5 healthy → ALL ports failover to secondary\n"
+printf "• Secondary quorum: ≥2/3 brokers healthy\n"
+printf "• Failover is cluster-wide (all-or-nothing), not per-broker\n"
 printf "• Current active cluster: %s\n" "$active_cluster"
 
-printf "\n🔄 HEALTH CHECK STATUS\n"
-printf "=====================\n"
-if echo "$clusters_output" | grep -q "redpanda_cluster"; then
-    printf "✅ Envoy health checks running\n"
+printf "\n🔄 ENVOY HEALTH CHECK STATUS\n"
+printf "============================\n"
+# Show Envoy's view (should match aggregator since it checks the aggregator)
+if echo "$clusters_output" | grep -q "health_flags::healthy"; then
+    printf "✅ Envoy health checks running (checking aggregator)\n"
 else
-    printf "❌ Envoy health checks not found\n"
+    printf "❌ Envoy health checks not detecting healthy endpoints\n"
 fi
 EOF
 
@@ -182,8 +175,8 @@ EOF
 
 # Function to simulate cluster failure
 simulate_cluster_a_failure() {
-    echo "💥 Simulating Primary cluster failure (stopping all 3 primary brokers)..."
-    docker stop primary-broker-0 primary-broker-1 primary-broker-2
+    echo "💥 Simulating Primary cluster failure (stopping all 5 primary brokers)..."
+    docker stop primary-broker-0 primary-broker-1 primary-broker-2 primary-broker-3 primary-broker-4
     sleep 5
     echo "🔄 Envoy should now route to Secondary cluster"
     check_health
@@ -191,8 +184,8 @@ simulate_cluster_a_failure() {
 
 # Function to restore cluster
 restore_cluster_a() {
-    echo "🔄 Restoring Primary cluster (starting all 3 primary brokers)..."
-    docker start primary-broker-0 primary-broker-1 primary-broker-2
+    echo "🔄 Restoring Primary cluster (starting all 5 primary brokers)..."
+    docker start primary-broker-0 primary-broker-1 primary-broker-2 primary-broker-3 primary-broker-4
     sleep 10
     echo "✅ Primary cluster restored - Envoy should detect and route back"
     check_health
@@ -231,11 +224,11 @@ case "$1" in
         timeout=60
         while [ $timeout -gt 0 ]; do
             healthy_count=$(docker compose ps --format table | grep -c "healthy" || true)
-            if [ "$healthy_count" -ge 3 ]; then
+            if [ "$healthy_count" -ge 9 ]; then
                 echo "✅ All services are healthy!"
                 break
             fi
-            echo "⏳ Still waiting... ($healthy_count/3 services healthy, $timeout seconds remaining)"
+            echo "⏳ Still waiting... ($healthy_count/9 services healthy, $timeout seconds remaining)"
             sleep 10
             timeout=$((timeout-10))
         done

@@ -1,5 +1,5 @@
 services:
-  # Primary Redpanda Cluster (3 brokers)
+  # Primary Redpanda Cluster (5 brokers)
   primary-broker-0:
     image: redpandadata/redpanda:latest
     container_name: primary-broker-0
@@ -70,6 +70,56 @@ services:
       - redpanda-net
     healthcheck:
       test: ["CMD-SHELL", "rpk cluster info --brokers=primary-broker-2:9091 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  primary-broker-3:
+    image: redpandadata/redpanda:latest
+    container_name: primary-broker-3
+    command:
+      - redpanda
+      - start
+      - --smp=1
+      - --memory=1G
+      - --overprovisioned
+    volumes:
+      - ./redpanda-config/primary-broker-3:/etc/redpanda
+      - ./certs:/etc/redpanda/certs:ro
+    ports:
+      - "19095:19095"
+      - "18087:18087"
+      - "18088:18088"
+    networks:
+      - redpanda-net
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster info --brokers=primary-broker-3:9091 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  primary-broker-4:
+    image: redpandadata/redpanda:latest
+    container_name: primary-broker-4
+    command:
+      - redpanda
+      - start
+      - --smp=1
+      - --memory=1G
+      - --overprovisioned
+    volumes:
+      - ./redpanda-config/primary-broker-4:/etc/redpanda
+      - ./certs:/etc/redpanda/certs:ro
+    ports:
+      - "19096:19096"
+      - "18089:18089"
+      - "18090:18090"
+    networks:
+      - redpanda-net
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster info --brokers=primary-broker-4:9091 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -151,14 +201,53 @@ services:
       retries: 5
       start_period: 30s
 
+  # Health aggregator for cluster-wide majority-based failover
+  health-aggregator:
+    image: python:3.11-slim
+    container_name: health-aggregator
+    command: ["python3", "/app/aggregator.py"]
+    volumes:
+      - ./health-aggregator/aggregator.py:/app/aggregator.py
+    ports:
+      - "8080:8080"   # Primary cluster health endpoint
+      - "8082:8082"   # Secondary cluster health endpoint
+    networks:
+      redpanda-net:
+        ipv4_address: 172.30.0.100
+    depends_on:
+      primary-broker-0:
+        condition: service_started
+      primary-broker-1:
+        condition: service_started
+      primary-broker-2:
+        condition: service_started
+      primary-broker-3:
+        condition: service_started
+      primary-broker-4:
+        condition: service_started
+      secondary-broker-0:
+        condition: service_started
+      secondary-broker-1:
+        condition: service_started
+      secondary-broker-2:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8080/status')\" || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
   # Envoy Proxy for failover
   envoy:
-    image: envoyproxy/envoy:contrib-v1.31-latest
+    image: envoyproxy/envoy:v1.31-latest
     container_name: envoy-proxy
     ports:
       - "9092:9092"
       - "9093:9093"
       - "9094:9094"
+      - "9095:9095"
+      - "9096:9096"
       - "9901:9901"  # Admin interface
     volumes:
       - ./envoy-proxy/envoy.yaml:/etc/envoy/envoy.yaml
@@ -171,11 +260,17 @@ services:
         condition: service_healthy
       primary-broker-2:
         condition: service_healthy
+      primary-broker-3:
+        condition: service_healthy
+      primary-broker-4:
+        condition: service_healthy
       secondary-broker-0:
         condition: service_healthy
       secondary-broker-1:
         condition: service_healthy
       secondary-broker-2:
+        condition: service_healthy
+      health-aggregator:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "/bin/bash -c 'echo > /dev/tcp/localhost/9901' || exit 1"]
@@ -219,3 +314,6 @@ services:
 networks:
   redpanda-net:
     driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24

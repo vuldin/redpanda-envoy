@@ -20,6 +20,8 @@ BROKERS=(
     primary-broker-0
     primary-broker-1
     primary-broker-2
+    primary-broker-3
+    primary-broker-4
     secondary-broker-0
     secondary-broker-1
     secondary-broker-2

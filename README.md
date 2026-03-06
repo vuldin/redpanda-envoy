@@ -1,30 +1,100 @@
 # Redpanda Envoy Failover PoC
 
-This PoC demonstrates how Envoy proxy can facilitate transparent failover between Redpanda clusters for clients, without requiring client configuration changes or restarts.
+Envoy proxy sits between clients and two Redpanda clusters, routing traffic to the primary and failing over to the secondary when the primary loses quorum. Clients don't need config changes or restarts.
 
 ## Architecture
 
+### Diagram 1: Data flow and failover routing
+
 ```
-Client Application (connects to envoy:9092)
-           ↓
-    Envoy Proxy (TCP Proxy with HTTP Health Checks)
-     ↓ (priority 0)        ↓ (priority 1)
-Primary Cluster       Secondary Cluster
-primary-broker-0       secondary-broker-0
-     ↓ (HTTP)                  ↓ (HTTP)
-Schema Registry       Schema Registry
-   (port 8081)            (port 8081)
+  Kafka Clients (connect to envoy:9092-9096 with TLS)
+          │
+          │ TLS-encrypted traffic
+          ▼
+  ┌───────────────────────────────────────────────────────┐
+  │                 Envoy Proxy (L4)                      │
+  │          TCP passthrough — does NOT terminate TLS     │
+  │                                                       │
+  │  Port    Cluster             Priority 0   Priority 1  │
+  │  ─────   ──────────────────  ──────────   ──────────  │
+  │  9092    broker_0_cluster    primary-0    secondary-0 │
+  │  9093    broker_1_cluster    primary-1    secondary-1 │
+  │  9094    broker_2_cluster    primary-2    secondary-2 │
+  │  9095    broker_3_cluster    primary-3    secondary-0 │ ← wraparound
+  │  9096    broker_4_cluster    primary-4    secondary-1 │ ← wraparound
+  └────────────┬─────────────────────────┬────────────────┘
+               │                         │
+     priority 0 (preferred)      priority 1 (failover)
+               │                         │
+               ▼                         ▼
+  ┌────────────────────────┐  ┌───────────────────────┐
+  │  Primary Cluster       │  │  Secondary Cluster    │
+  │  5 brokers (TLS)       │  │  3 brokers (TLS)      │
+  │                        │  │                       │
+  │  primary-broker-0..4   │  │  secondary-broker-0..2│
+  │  TLS terminates here   │  │  TLS terminates here  │
+  └────────────────────────┘  └───────────────────────┘
+
+  Each broker has 3 Kafka listeners:
+    internal  :9092  TLS        advertised as envoy:<port>  ← Envoy/clients
+    local     :9091  plaintext  advertised as <broker>:9091 ← Schema Registry, PandaProxy
+    external  :19092+ TLS       advertised as localhost:<port> ← direct host access
 ```
 
-## Key Features
+### Diagram 2: Health check flow
 
-- **Zero Client Changes**: Clients connect only to `envoy:9092`
-- **TCP Proxying for Kafka**: Works with any Kafka client library
-- **HTTP Health Checks**: Monitors Schema Registry endpoint to detect broker failures and recovery mode
-- **Recovery Mode Detection**: Automatically detects when clusters enter recovery mode (Schema Registry disabled)
-- **Automatic Failover**: Health check failures trigger priority-based routing to secondary cluster
-- **Priority-based Routing**: Primary cluster preferred when healthy, automatic failback when recovered
-- **Independent Clusters**: Each cluster maintains its own data (demonstrates routing capabilities)
+```
+  ┌──────────────────────────────────────────────────────┐
+  │                   Envoy Proxy                        │
+  │                                                      │
+  │  All 5 clusters health-check via:                    │
+  │    GET /schemas/types                                │
+  │    redirected by health_check_config.address         │
+  │                                                      │
+  │  Priority 0 endpoints ──→ 172.30.0.100:8080          │
+  │  Priority 1 endpoints ──→ 172.30.0.100:8082          │
+  └──────────────────────────────┬───────────────────────┘
+                                 │ HTTP health checks
+                                 ▼
+  ┌──────────────────────────────────────────────────────┐
+  │          Health Aggregator (172.30.0.100)            │
+  │                                                      │
+  │  Polls Schema Registry (:8081) on all 8 brokers      │
+  │  every 2 seconds                                     │
+  │                                                      │
+  │  :8080 → primary quorum   (≥3/5 healthy → 200,       │
+  │                             else → 503)              │
+  │  :8082 → secondary quorum (≥2/3 healthy → 200,       │
+  │                             else → 503)              │
+  └──────┬──────────────────────────────┬────────────────┘
+         │ GET /schemas/types :8081     │
+         ▼                              ▼
+  ┌────────────────────┐  ┌──────────────────────────┐
+  │  Primary Cluster   │  │  Secondary Cluster       │
+  │  primary-broker-0  │  │  secondary-broker-0      │
+  │  primary-broker-1  │  │  secondary-broker-1      │
+  │  primary-broker-2  │  │  secondary-broker-2      │
+  │  primary-broker-3  │  │                          │
+  │  primary-broker-4  │  │                          │
+  │  Schema Reg :8081  │  │  Schema Reg :8081        │
+  └────────────────────┘  └──────────────────────────┘
+
+  Key: Envoy never health-checks brokers directly.
+  The aggregator makes the quorum decision, then Envoy
+  treats the entire priority level as healthy or unhealthy
+  → all 5 ports fail over together (all-or-nothing).
+```
+
+## What it does
+
+- TLS passthrough: Envoy forwards encrypted traffic at L4; TLS terminates at the broker, not Envoy
+- Clients connect to `envoy:9092-9096` with no cluster-specific config. Works with any Kafka client library.
+- Asymmetric clusters: 5 primary brokers, 3 secondary brokers
+- Majority-based failover: a health aggregator checks all brokers and triggers failover when the cluster loses quorum (3/5 primary or 2/3 secondary)
+- All-or-nothing failover: all 5 ports switch together (not per-broker), matching Raft quorum semantics
+- Recovery mode detection: Schema Registry goes down in recovery mode, so the aggregator catches it
+- Priority-based routing: primary preferred when healthy, automatic failback when it recovers
+- Independent clusters: each cluster has its own data (no replication in this demo)
 
 ## Prerequisites
 
@@ -35,10 +105,20 @@ Schema Registry       Schema Registry
   - Python-based: `pip install yq`
   - Check which one you have: `yq --version`
 - (Linux only) `sudo` access for setting file permissions
+- (Linux only) **Increase AIO limit** — the demo runs 8 Redpanda brokers, which exceeds the default Linux async I/O limit:
+  ```bash
+  sudo sysctl -w fs.aio-max-nr=1048576
+  ```
+  Without this, some brokers will crash on startup with: `Could not setup Async I/O: ... Set /proc/sys/fs/aio-max-nr to at least ...`
 
-## Quick Start - Recovery Mode Testing
+  To make this permanent across reboots, add to `/etc/sysctl.conf`:
+  ```
+  fs.aio-max-nr = 1048576
+  ```
 
-This demo shows how Envoy's Schema Registry health checks prevent routing traffic to clusters in recovery mode.
+## Quick start - recovery mode testing
+
+This walkthrough shows Envoy refusing to route traffic to a cluster in recovery mode, and failing over to the secondary instead.
 
 1. **Start the demo environment:**
    ```bash
@@ -50,7 +130,7 @@ This demo shows how Envoy's Schema Registry health checks prevent routing traffi
    ./failover-demo.sh routing
    ```
 
-   This displays real-time cluster health and routing status. Keep it running while you continue through the remaining steps.
+   This shows cluster health and routing in real time. Keep it running.
 
 3. **Start producer in one terminal:**
 
@@ -76,55 +156,67 @@ This demo shows how Envoy's Schema Registry health checks prevent routing traffi
    docker exec -it python-client python3 python-consumer.py
    ```
 
-5. **Stop one broker in primary cluster (simulating broker failure):**
+5. **Stop two brokers in primary cluster (minority failure — no failover):**
    ```bash
-   docker stop primary-broker-0
+   docker stop primary-broker-3 primary-broker-4
    ```
 
-   Watch the routing monitor - Envoy will eventually show 2/3 brokers healthy and continue routing to primary cluster.
+   Watch the routing monitor -- the aggregator still shows 3/5 primary brokers healthy, so quorum holds and all traffic stays on primary. Clients that were connected to the 2 downed brokers get errors and reconnect to healthy ones via metadata refresh.
 
-   **Note**: This may take 10-12 seconds. Envoy runs health checks every 3 seconds and requires 3 consecutive failures before marking a broker as unhealthy.
+   **Note**: The aggregator checks every 2 seconds, but Envoy needs ~10-12 seconds to confirm (3 consecutive health check failures at 3s intervals).
 
-6. **Stop a second broker in primary cluster (simulating cluster failure):**
+6. **Stop one more primary broker (majority failure — triggers cluster-wide failover):**
    ```bash
-   docker stop primary-broker-1
+   docker stop primary-broker-2
    ```
 
-   Watch the routing monitor - Envoy will fail over to secondary cluster (only 1/3 primary brokers healthy).
+   Watch the routing monitor -- the aggregator now sees only 2/5 primary brokers healthy (quorum lost) and returns 503. Envoy marks all primary endpoints unhealthy at once, and all 5 ports (9092-9096) flip to secondary.
 
-   **Note**: Failover may take 10-12 seconds as Envoy detects the second broker failure.
+   **Note**: To trigger failover by stopping all 5: `./failover-demo.sh fail-primary`
 
-7. **Restart last running broker in recovery mode:**
+7. **Put a running broker into recovery mode:**
    ```bash
-   docker exec -it primary-broker-2 rpk redpanda mode recovery
-   docker restart primary-broker-2
+   docker exec -it primary-broker-0 rpk redpanda mode recovery
+   docker restart primary-broker-0
    ```
 
-8. **Verify the single remaining broker is now in recovery mode:**
+   Brokers 0 and 1 are still running, so we can exec into broker-0 to enable recovery mode.
+
+8. **Verify the broker is now in recovery mode:**
    ```bash
-   docker exec -it primary-broker-2 rpk cluster health
+   docker exec -it primary-broker-0 rpk cluster health
    ```
 
-   Look for "Nodes in recovery mode: [2]" showing broker 2 is in recovery.
+   Look for "Nodes in recovery mode: [0]" showing broker 0 is in recovery.
 
-   Watch the routing monitor - Envoy will detect that Schema Registry is disabled and continue routing to secondary.
+   Watch the routing monitor -- Envoy sees Schema Registry is down and keeps routing to secondary.
 
-   **Note**: This may take 10-12 seconds as Envoy's health checks detect the Schema Registry is unavailable.
+   **Note**: May take 10-12 seconds for Envoy's health checks to register the change.
 
-9. **Edit config and restart the two stopped brokers in recovery mode:**
+9. **Edit config and restart the stopped brokers in recovery mode:**
+
+   Brokers 2, 3, and 4 are stopped, so we use `yq` to edit their config files on disk, then start them.
 
    **If you have Go-based yq (mikefarah/yq):**
    ```bash
-   yq '.redpanda.recovery_mode_enabled = true' -i redpanda-config/primary-broker-0/redpanda.yaml
-   yq '.redpanda.recovery_mode_enabled = true' -i redpanda-config/primary-broker-1/redpanda.yaml
-   docker start primary-broker-0 primary-broker-1
+   yq '.redpanda.recovery_mode_enabled = true' -i redpanda-config/primary-broker-2/redpanda.yaml
+   yq '.redpanda.recovery_mode_enabled = true' -i redpanda-config/primary-broker-3/redpanda.yaml
+   yq '.redpanda.recovery_mode_enabled = true' -i redpanda-config/primary-broker-4/redpanda.yaml
+   docker start primary-broker-2 primary-broker-3 primary-broker-4
    ```
 
    **If you have Python-based yq (kislyuk/yq):**
    ```bash
-   yq -y '.redpanda.recovery_mode_enabled = true' redpanda-config/primary-broker-0/redpanda.yaml > /tmp/temp0.yaml && mv /tmp/temp0.yaml redpanda-config/primary-broker-0/redpanda.yaml
-   yq -y '.redpanda.recovery_mode_enabled = true' redpanda-config/primary-broker-1/redpanda.yaml > /tmp/temp1.yaml && mv /tmp/temp1.yaml redpanda-config/primary-broker-1/redpanda.yaml
-   docker start primary-broker-0 primary-broker-1
+   yq -y '.redpanda.recovery_mode_enabled = true' redpanda-config/primary-broker-2/redpanda.yaml > /tmp/temp2.yaml && mv /tmp/temp2.yaml redpanda-config/primary-broker-2/redpanda.yaml
+   yq -y '.redpanda.recovery_mode_enabled = true' redpanda-config/primary-broker-3/redpanda.yaml > /tmp/temp3.yaml && mv /tmp/temp3.yaml redpanda-config/primary-broker-3/redpanda.yaml
+   yq -y '.redpanda.recovery_mode_enabled = true' redpanda-config/primary-broker-4/redpanda.yaml > /tmp/temp4.yaml && mv /tmp/temp4.yaml redpanda-config/primary-broker-4/redpanda.yaml
+   docker start primary-broker-2 primary-broker-3 primary-broker-4
+   ```
+
+   Also put broker-1 into recovery mode (it's still running):
+   ```bash
+   docker exec -it primary-broker-1 rpk redpanda mode recovery
+   docker restart primary-broker-1
    ```
 
 10. **Verify all primary brokers are in recovery mode:**
@@ -138,54 +230,52 @@ This demo shows how Envoy's Schema Registry health checks prevent routing traffi
     =======================
     Healthy:                          true
     Unhealthy reasons:                []
-    Controller ID:                    2
-    All nodes:                        [0 1 2]
+    Controller ID:                    0
+    All nodes:                        [0 1 2 3 4]
     Nodes down:                       []
-    Nodes in recovery mode:           [0 1 2]
+    Nodes in recovery mode:           [0 1 2 3 4]
     Leaderless partitions (0):        []
     Under-replicated partitions (0):  []
     ```
 
-    **Key observation**: The cluster reports as "Healthy: true" but all nodes show "Nodes in recovery mode: [0 1 2]".
+    Notice: the cluster reports "Healthy: true" but all nodes are in "Nodes in recovery mode: [0 1 2 3 4]".
 
-    Watch the routing monitor - Envoy continues routing to secondary because Schema Registry is disabled in recovery mode!
+    Watch the routing monitor -- Envoy still routes to secondary because Schema Registry is disabled in recovery mode.
 
 11. **Take primary cluster out of recovery mode:**
     ```bash
-    docker exec primary-broker-0 rpk redpanda mode dev
-    docker restart primary-broker-0
-
-    docker exec primary-broker-1 rpk redpanda mode dev
-    docker restart primary-broker-1
-
-    docker exec primary-broker-2 rpk redpanda mode dev
-    docker restart primary-broker-2
+    for i in 0 1 2 3 4; do
+      docker exec primary-broker-$i rpk redpanda mode dev
+      docker restart primary-broker-$i
+    done
     ```
 
     **Note**: The restart is required for the mode change to take effect. For production deployments, replace `dev` with `prod` or `production`.
 
-    As each broker exits recovery mode and restarts, Schema Registry becomes available again. Once the last broker is taken out of recovery mode, Envoy will detect that the primary cluster is ready for connections and automatically begin routing traffic back to it.
+    As each broker exits recovery mode and restarts, Schema Registry comes back up. Once the last broker is out of recovery mode, Envoy detects the primary cluster is healthy again and routes traffic back to it.
 
 12. **Verify Envoy starts routing traffic back to primary:**
 
-    Watch the routing monitor - traffic automatically returns to primary cluster (priority 0) once all brokers are healthy and out of recovery mode!
+    Watch the routing monitor -- traffic shifts back to primary (priority 0) once all brokers are healthy and out of recovery mode.
 
-    **Note**: The failback may take 6-8 seconds as Envoy runs health checks and requires 2 consecutive successes before marking brokers as healthy.
+    **Note**: Failback takes 6-8 seconds. Envoy requires 2 consecutive successful health checks before marking endpoints healthy.
 
-## Files Overview
+## Files overview
 
 - `docker-compose.yml` - Complete environment setup with volume mounts for configs
 - `redpanda-config/` - Directory containing individual redpanda.yaml files for each broker
-- `envoy-proxy/envoy.yaml` - Envoy configuration with Schema Registry health checks
+- `envoy-proxy/envoy.yaml` - Envoy configuration with health checks pointing to health aggregator
+- `health-aggregator/aggregator.py` - Python HTTP server for cluster-wide majority-based health decisions
 - `test-producer.sh` - RPK-based producer connecting via Envoy
 - `test-consumer.sh` - RPK-based consumer connecting via Envoy
 - `python-producer.py` - Python producer using kafka-python library
 - `python-consumer.py` - Python consumer using kafka-python library
 - `setup-topics.sh` - Creates demo topics on both clusters
 - `failover-demo.sh` - Main demo orchestration script
+- `generate-certs.sh` - Generates self-signed CA and per-broker TLS certificates
 - `KAFKA_PROXYING_INVESTIGATION.md` - Deep dive into Kafka proxying challenges and solutions
 
-## Configuration Structure
+## Configuration structure
 
 Each broker has its own configuration file:
 ```
@@ -193,6 +283,8 @@ redpanda-config/
 ├── primary-broker-0/redpanda.yaml
 ├── primary-broker-1/redpanda.yaml
 ├── primary-broker-2/redpanda.yaml
+├── primary-broker-3/redpanda.yaml
+├── primary-broker-4/redpanda.yaml
 ├── secondary-broker-0/redpanda.yaml
 ├── secondary-broker-1/redpanda.yaml
 └── secondary-broker-2/redpanda.yaml
@@ -205,59 +297,70 @@ sudo chown -R 101:101 redpanda-config/
 
 Docker Desktop on macOS and Windows handles volume permissions differently and typically doesn't require this step.
 
-## Envoy Configuration Highlights
+## Envoy configuration
 
-### Kafka Broker Filter (Contrib Extension)
-- **Image**: `envoyproxy/envoy:contrib-v1.31-latest` (NOT standard image)
-- Intercepts and rewrites Kafka metadata responses
-- Rewrites broker addresses: `primary-broker-0:9092` → `envoy:9092`
-- Enables true transparent proxying for all Kafka clients
-- All client traffic flows through Envoy (not just bootstrap)
-
-### TCP Proxy
-- Listens on ports 9092, 9093, 9094 (one per broker)
+### TCP proxy (TLS passthrough)
+- **Image**: `envoyproxy/envoy:v1.31-latest` (standard image — no contrib extensions needed)
+- Listens on ports 9092-9096 (one per primary broker position)
 - Routes to separate clusters per broker position
-- Combined with Kafka filter for protocol awareness
+- TLS passthrough: Envoy forwards raw encrypted bytes without termination
+- No TLS configuration on Envoy — no certs, no `transport_socket`
+- Broker certificates include `envoy` as a SAN for hostname verification
 
-### Health Checking
-- HTTP health checks to Schema Registry (`/schemas/types`) every 3 seconds
+### Health checking (majority-based, via health aggregator)
+- **Health aggregator** checks Schema Registry (`/schemas/types`) on ALL brokers every 2 seconds
+- Envoy health-checks the aggregator (every 3s) instead of individual brokers
+- **Primary quorum**: aggregator port 8080 returns 200 if ≥3/5 brokers healthy, 503 if quorum lost
+- **Secondary quorum**: aggregator port 8082 returns 200 if ≥2/3 brokers healthy, 503 if quorum lost
+- 3 consecutive failures from aggregator mark ALL endpoints in that priority unhealthy (~10-12 seconds)
+- 2 consecutive successes mark ALL endpoints healthy (~6-8 seconds)
 - Detects recovery mode (Schema Registry disabled)
-- 3 consecutive failures mark endpoint unhealthy (~10-12 seconds)
-- 2 consecutive successes mark endpoint healthy (~6-8 seconds)
 - 30 second ejection time for failed endpoints
 
-### Priority-based Load Balancing
-- **3 separate clusters**: broker_0_cluster, broker_1_cluster, broker_2_cluster
+### Priority-based load balancing
+- **5 separate clusters**: broker_0_cluster through broker_4_cluster
 - Each cluster has priority-based routing:
   - **Priority 0**: primary-broker-X (preferred)
-  - **Priority 1**: secondary-broker-X (fallback)
-- Traffic only goes to secondary when primary is unhealthy
-- Per-broker failover enables granular control
+  - **Priority 1**: secondary-broker-X (fallback, wraps around for brokers 3/4)
+- Traffic only goes to secondary when primary loses quorum
+- Failover is cluster-wide (all-or-nothing), matching Raft quorum semantics
 
-### Outlier Detection
+| Envoy Port | Primary (Priority 0) | Secondary (Priority 1) |
+|---|---|---|
+| 9092 | primary-broker-0 | secondary-broker-0 |
+| 9093 | primary-broker-1 | secondary-broker-1 |
+| 9094 | primary-broker-2 | secondary-broker-2 |
+| 9095 | primary-broker-3 | secondary-broker-0 (wraps) |
+| 9096 | primary-broker-4 | secondary-broker-1 (wraps) |
+
+### Outlier detection
 - Monitors connection failures
-- Automatically ejects problematic endpoints
-- 50% max ejection to maintain availability
+- Ejects problematic endpoints automatically
+- 50% max ejection to keep some availability
 
-## Testing Different Scenarios
+## Testing different scenarios
 
-### 1. Normal Operation
-- Both clusters healthy
-- All traffic routes to primary cluster
-- Secondary cluster remains ready for failover
+### 1. Normal operation
+- Both clusters healthy, all traffic goes to primary
+- Secondary sits idle, ready for failover
 
-### 2. Primary Cluster Failure
-- Primary unhealthy → Traffic automatically routes to secondary cluster
-- Clients experience brief connection interruption during TCP failover
-- New data written to secondary cluster
+### 2. Partial primary failure (minority)
+- 1-2 brokers down, quorum still holds (≥3/5 healthy)
+- All traffic stays on primary
+- Clients reconnect to healthy brokers via metadata refresh
 
-### 3. Primary Cluster Recovery
-- Primary becomes healthy → Traffic gradually shifts back to primary
-- Demonstrates Envoy's priority-based routing
-- New data written to primary cluster (clusters have independent data)
+### 3. Primary cluster failure (majority)
+- ≥3 brokers down, quorum lost (<3/5 healthy)
+- All 5 Envoy ports fail over to secondary at once
+- Clients see a brief connection interruption, then reconnect
+- New data goes to secondary cluster
 
-### 4. Both Clusters Unhealthy
-- Envoy returns connection errors to clients
+### 4. Primary cluster recovery
+- Primary becomes healthy again, traffic shifts back (all-or-nothing)
+- New data goes to primary (clusters have independent data)
+
+### 5. Both clusters unhealthy
+- Envoy returns connection errors
 - No healthy upstream available
 
 ## Monitoring
@@ -265,59 +368,65 @@ Docker Desktop on macOS and Windows handles volume permissions differently and t
 - **Envoy Admin**: http://localhost:9901
 - **Cluster Stats**: `curl localhost:9901/stats | grep redpanda_cluster`
 - **Health Check Stats**: `curl localhost:9901/stats | grep health_check`
+- **Health Aggregator (primary)**: `curl -s localhost:8080/status | python3 -m json.tool`
+- **Health Aggregator (secondary)**: `curl -s localhost:8082/status | python3 -m json.tool`
 
-## Client Configuration
+## Client configuration
 
 Clients only need:
 ```python
-bootstrap_servers=['envoy:9092']  # or localhost:9092 from host
+bootstrap_servers=['envoy:9092']       # Bootstrap to any one Envoy port
+security_protocol='SSL'                # TLS passthrough to broker
+ssl_cafile='/certs/ca.crt'             # CA cert to verify broker certificate
+metadata_max_age_ms=5000               # Refresh topology every 5s for fast failover
 ```
 
-No cluster-specific configuration required!
+No cluster-specific config. Clients discover all 5 brokers via metadata.
 
-### Client Traffic Flow
+### Client traffic flow
 
-**RPK Clients (test-consumer.sh, test-producer.sh):**
-- All traffic flows through Envoy on every request
-- Full transparent failover
-- Benefit from Envoy health checks and priority routing
+**RPK clients (test-consumer.sh, test-producer.sh):** All traffic goes through Envoy on every request, so failover is transparent.
 
-**Python Clients (python-producer.py, python-consumer.py):**
-- **All traffic flows through Envoy** using the Kafka broker filter
-- Envoy intercepts and rewrites broker metadata responses
-- Clients see brokers as `envoy:9092`, `envoy:9093`, `envoy:9094`
-- True transparent failover with health check-based routing
+**Python clients (python-producer.py, python-consumer.py):**
+- Bootstrap to `envoy:9092` with TLS (`security_protocol='SSL'`)
+- Discover all 5 brokers via metadata: `envoy:9092` through `envoy:9096`
+- `metadata_max_age_ms=5000` refreshes topology every 5 seconds
+- During failover, the next metadata refresh reveals the 3-broker secondary topology
 
 **How it works:**
-1. Client requests metadata → Envoy forwards to primary/secondary (based on health)
-2. Broker responds: "Broker 0 is at primary-broker-0:9092"
-3. **Envoy rewrites**: "Broker 0 is at envoy:9092"
-4. Client connects to envoy:9092 for all subsequent operations
+1. Client bootstraps to `envoy:9092`, Envoy forwards to primary-broker-0 (TLS passthrough)
+2. Broker responds with metadata listing brokers at `envoy:9092` through `envoy:9096`
+3. Client connects to each broker's Envoy port for partition operations
+4. During failover, Envoy routes to secondary; next metadata refresh corrects the client's view
 
-**Important Notes:**
-- Requires **Envoy contrib image** (`envoyproxy/envoy:contrib-v1.31-latest`) - standard image doesn't include Kafka filter
-- During failover, you may see `NotLeaderForPartitionError` because primary and secondary are independent clusters without data replication
-- For production: implement data replication (Redpanda Remote Read Replicas, MirrorMaker 2, or Redpanda Connect)
+**Worth noting:**
+- Uses the standard Envoy image (`envoyproxy/envoy:v1.31-latest`), no contrib extensions needed
+- During failover you may see `NotLeaderForPartitionError` because primary and secondary are independent clusters without data replication
+- For production, add data replication (Redpanda Remote Read Replicas, MirrorMaker 2, or Redpanda Connect)
 
 See `KAFKA_PROXYING_INVESTIGATION.md` for implementation details, replication strategies, and troubleshooting.
 
-## How Recovery Mode Detection Works
+## How recovery mode detection works
 
-Envoy detects recovery mode by checking Schema Registry (port 8081):
+The health aggregator detects recovery mode by checking Schema Registry on each broker:
 
-1. **Normal operation**: Schema Registry responds with HTTP 200 to `/schemas/types`
-2. **Recovery mode**: Schema Registry is disabled → health check fails
-3. **Failover**: Envoy marks broker unhealthy and routes to secondary cluster
+1. **Normal operation**: Schema Registry on each broker responds with HTTP 200 to `/schemas/types`
+2. **Recovery mode**: Schema Registry is disabled on affected brokers → aggregator counts them as unhealthy
+3. **Quorum check**: If unhealthy brokers exceed majority threshold (3/5 for primary, 2/3 for secondary), aggregator returns 503
+4. **Failover**: Envoy marks ALL endpoints in that priority unhealthy and routes entire cluster to secondary
 
 Health check configuration per endpoint:
 ```yaml
 endpoint:
   address:
     socket_address:
-      address: primary-broker-0
-      port_value: 9092              # Traffic goes here
+      address: primary-broker-0       # Data traffic goes here
+      port_value: 9092
   health_check_config:
-    port_value: 8081                # Health checks go here
+    address:
+      socket_address:
+        address: 172.30.0.100         # Health checks go to aggregator (static IP)
+        port_value: 8080              # Primary cluster quorum endpoint
 ```
 
 **Why Schema Registry?**
@@ -325,23 +434,42 @@ endpoint:
 - Simple HTTP endpoint, no authentication required
 - Lightweight check: `GET /schemas/types` returns `["JSON","PROTOBUF","AVRO"]`
 
-## Production Considerations
+**Why a health aggregator?**
+- Envoy's native health checking is per-endpoint — no built-in "majority" logic
+- Without it, losing 1 broker would failover only that port, leaving a split-brain routing state
+- The aggregator makes a single quorum decision for the entire cluster
 
-1. **Data Replication**: Implement data sync between clusters (MirrorMaker, Redpanda Connect, etc.)
-2. **Consumer Group Coordination**: Manage consumer offsets across clusters
-3. **DNS/Service Discovery**: Replace container names with actual hostnames
-4. **TLS Termination**: Add SSL/TLS support in Envoy configuration
-5. **Authentication**: Configure SASL/SCRAM forwarding through Envoy
-6. **Monitoring**: Integrate with Prometheus/Grafana for observability
-7. **Application Logic**: Handle potential data inconsistencies during failover
-8. **Health Check Tuning**: Adjust thresholds based on network conditions and recovery time objectives
-9. **Config Management**: Use configuration management tools to maintain broker configs at scale
+**Why a static IP for the aggregator?** Envoy's `health_check_config.address` field requires a raw IP address. Using a DNS hostname (e.g., `health-aggregator`) causes Envoy to crash on startup with `malformed IP address: health-aggregator`. The health aggregator is assigned a static IP (`172.30.0.100`) in Docker Compose via `ipv4_address`, and the Docker network uses a fixed subnet (`172.30.0.0/24`).
+
+## Why 5 Envoy ports?
+
+Kafka clients discover brokers via metadata responses. Each broker advertises a unique `host:port` (e.g., `envoy:9092`, `envoy:9093`, ..., `envoy:9096`). The client then connects directly to the advertised address for partition leadership. This drives a few requirements:
+
+**Port count matches the largest cluster.** The number of Envoy listener ports must equal the broker count of the **largest** cluster connected to Envoy. In this demo, the primary has 5 brokers, so Envoy has 5 ports (9092-9096). If Envoy only had 3 ports but the primary cluster has 5 brokers, brokers 3 and 4 would have no Envoy port to advertise — clients would get metadata pointing to addresses that don't exist, causing `ConnectionError` / `NoBrokersAvailable` for any partition led by those brokers.
+
+**Failover to a smaller cluster.** The secondary cluster has only 3 brokers, so it uses only 3 of the 5 ports during failover. The remaining 2 ports (9095/9096) wrap around to secondary-broker-0 and secondary-broker-1. After failover, the client's next metadata refresh (within 5 seconds via `metadata_max_age_ms`) reveals only 3 brokers in the secondary cluster. The client drops connections to ports 9095/9096 and rebalances across the 3 active brokers. This brief overlap is harmless.
+
+**Without enough ports**, clients receive metadata with broker addresses that have no corresponding Envoy listener, causing hard connection failures, `NoBrokersAvailable` exceptions, and inability to produce/consume from partitions led by the unmapped brokers. By having enough ports for the largest cluster, every broker can advertise a valid Envoy address regardless of which cluster is active.
+
+## Production considerations
+
+For a real deployment, you'd also need to address:
+
+1. **Data replication** -- sync data between clusters (MirrorMaker, Redpanda Connect, etc.)
+2. **Consumer group offsets** -- manage offsets across clusters
+3. **DNS/service discovery** -- replace container names with real hostnames
+4. **Health aggregator HA** -- run multiple aggregator instances or embed quorum logic in a sidecar
+5. **Authentication** -- configure SASL/SCRAM forwarding through Envoy
+6. **Monitoring** -- export Envoy and aggregator metrics to Prometheus/Grafana
+7. **Data consistency** -- handle inconsistencies during failover at the application layer
+8. **Health check tuning** -- adjust thresholds based on network conditions and recovery time targets
+9. **Config management** -- use config management tooling to maintain broker configs at scale
 
 ## Troubleshooting
 
-### Python Client Configuration Issues
+### Python client timeout constraints
 
-The `kafka-python` library enforces specific relationships between timeout and connection settings. If you modify the Python client configurations, ensure you maintain these constraints:
+The `kafka-python` library enforces ordering between timeout settings. If you change the Python client configs, these relationships must hold:
 
 **Producer constraints:**
 ```
@@ -377,24 +505,24 @@ KafkaConfigurationError: Request timeout (15000) must be larger than session tim
 ```
 
 **Why these settings matter for failover:**
-- `metadata_max_age_ms=5000`: Forces client to refresh cluster metadata every 5 seconds. Default is 5 minutes (300000ms), which would prevent failover recovery. This is **critical for transparent failover**.
-- `max_block_ms=15000` (producer only): Maximum time to block waiting for metadata refresh during send operations. Prevents producer from getting stuck with stale metadata.
-- `request_timeout_ms`: Keep this low (10-15s) to fail fast and trigger metadata refresh sooner. Long timeouts block the client from discovering the failover.
+- `metadata_max_age_ms=5000`: Refreshes cluster metadata every 5 seconds. The default is 5 minutes (300000ms), which is far too slow for failover. This is the single most important setting.
+- `max_block_ms=15000` (producer only): How long the producer blocks waiting for metadata during send(). Keeps it from hanging on stale metadata.
+- `request_timeout_ms`: Keep this low (10-15s) to fail fast and trigger metadata refresh sooner. Long timeouts delay failover discovery.
 - `connections_max_idle_ms`: Must be larger than `request_timeout_ms`. Closes stale connections to failed brokers.
-- `reconnect_backoff_ms` / `reconnect_backoff_max_ms`: Controls retry timing when reconnecting. Lower values enable faster recovery.
+- `reconnect_backoff_ms` / `reconnect_backoff_max_ms`: Controls retry timing on reconnect. Lower values = faster recovery.
 
-**Important:** Even with aggressive metadata refresh settings, kafka-python may take 15-20 seconds to recover during failover because it needs to:
+**Expect 15-20 seconds of downtime.** Even with aggressive metadata refresh settings, kafka-python takes time to recover during failover:
 1. Time out pending requests (10-15s)
 2. Refresh metadata by reconnecting to Envoy (5s)
 3. Retry the failed operation
 
-Without proper metadata refresh settings, Python clients may cache stale broker information for up to 5 minutes, preventing them from discovering the failed-over cluster.
+Without tuning `metadata_max_age_ms`, Python clients cache stale broker info for up to 5 minutes and won't discover the failover.
 
-### Envoy Health Check Tuning
+### Envoy health check tuning
 
-Envoy's health check configuration in `envoy-proxy/envoy.yaml` controls how quickly it detects failures and initiates failover. The current configuration is optimized for fast detection (~10-12 seconds).
+The health check config in `envoy-proxy/envoy.yaml` controls how fast Envoy detects failures. Current settings detect failure in ~10-12 seconds.
 
-**Current optimized settings:**
+**Current settings:**
 ```yaml
 health_checks:
 - timeout: 2s                       # Time to wait for health check response
@@ -410,7 +538,7 @@ health_checks:
   healthy_edge_interval: 3s         # Interval after FIRST success
 ```
 
-**Detection timeline breakdown:**
+**Detection timeline:**
 
 When a broker goes down:
 1. First health check fails (~2s timeout)
@@ -428,7 +556,7 @@ When broker recovers:
 4. Broker marked healthy
 **Total: ~6-7 seconds**
 
-**Key insight:** The `unhealthy_edge_interval` setting is critical! Previously this was set to 30 seconds, which added significant delay after the first failure before running the second health check.
+Watch out for `unhealthy_edge_interval`. It was previously set to 30 seconds, which added a long pause after the first failure before Envoy ran the second health check. Reducing it to 3s cut detection time from ~60s to ~12s.
 
 **Common issues and solutions:**
 
@@ -439,25 +567,29 @@ When broker recovers:
 | **False positives during load** | Healthy brokers marked unhealthy under load | Increase `timeout` from 2s to 5s, or increase `unhealthy_threshold` from 3 to 5 |
 | **Slow recovery after failover** | Primary stays inactive too long after recovery | Reduce `healthy_edge_interval` and `healthy_threshold` for faster recovery |
 
-**Tuning recommendations based on environment:**
+**Tuning by environment:**
 
-- **Fast failover (production)**: Use current settings (3s intervals, 2s timeout)
-- **Stable network**: Can reduce `unhealthy_threshold` to 2 for even faster detection (~8 seconds)
-- **Unstable network**: Increase `timeout` to 5s and `unhealthy_threshold` to 5 to avoid false positives
-- **Low priority on speed**: Increase all intervals to 10s to reduce health check overhead
+- **Fast failover (production)**: Current settings work well (3s intervals, 2s timeout)
+- **Stable network**: Drop `unhealthy_threshold` to 2 for ~8 second detection
+- **Unstable network**: Raise `timeout` to 5s and `unhealthy_threshold` to 5 to avoid false positives
+- **Low priority on speed**: Raise all intervals to 10s to reduce health check overhead
 
 **Monitoring health checks:**
 ```bash
-# View cluster health status
-curl localhost:9901/clusters | grep -A 5 "primary-broker"
+# View cluster health via aggregator
+curl -s localhost:8080/status | python3 -m json.tool   # Primary quorum status
+curl -s localhost:8082/status | python3 -m json.tool   # Secondary quorum status
+
+# View Envoy health flags
+curl -s localhost:9901/clusters | grep health_flags
 
 # View health check stats
 curl localhost:9901/stats | grep health_check
 ```
 
-## Cleanup and Teardown
+## Cleanup
 
-To stop the demo environment:
+To stop the demo:
 
 ```bash
 ./failover-demo.sh stop
@@ -468,7 +600,7 @@ To stop the demo environment:
 docker compose down -v
 ```
 
-**Note**: The `-v` flag removes all data, topics, and consumer offsets. Only use this if you want to start from a completely clean state. After running this command, you'll need to fix permissions again on Linux:
+The `-v` flag removes all data, topics, and consumer offsets. On Linux, you'll need to fix permissions again afterward:
 
 ```bash
 sudo chown -R 101:101 redpanda-config/

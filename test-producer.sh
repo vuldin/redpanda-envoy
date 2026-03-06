@@ -2,7 +2,7 @@
 
 echo "🚀 Starting RPK-based producer test with failover support (TLS enabled)"
 echo "This producer will continuously send messages and handle broker failures"
-echo "Brokers: envoy:9092,envoy:9093,envoy:9094 (with automatic failover)"
+echo "Brokers: envoy:9092,envoy:9093,envoy:9094,envoy:9095,envoy:9096 (with automatic failover)"
 echo "TLS: Enabled (passthrough via Envoy, terminates at broker)"
 echo "Press Ctrl+C to stop"
 echo "=========================================="
@@ -12,7 +12,7 @@ consecutive_failures=0
 max_failures=3
 
 # Use all brokers in RPK for automatic failover
-all_brokers="envoy:9092,envoy:9093,envoy:9094"
+all_brokers="envoy:9092,envoy:9093,envoy:9094,envoy:9095,envoy:9096"
 
 # TLS flags - certs mounted at /certs from docker-compose
 TLS_FLAGS="--tls-enabled --tls-truststore /certs/ca.crt"

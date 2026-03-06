@@ -11,6 +11,12 @@ redpanda:
         - host:
             address: primary-broker-2
             port: 33145
+        - host:
+            address: primary-broker-3
+            port: 33145
+        - host:
+            address: primary-broker-4
+            port: 33145
     rpc_server:
         address: primary-broker-2
         port: 33145
@@ -92,6 +98,10 @@ schema_registry_client:
           port: 9091
         - address: primary-broker-2
           port: 9091
+        - address: primary-broker-3
+          port: 9091
+        - address: primary-broker-4
+          port: 9091
 pandaproxy_client:
     brokers:
         - address: primary-broker-0
@@ -99,4 +109,8 @@ pandaproxy_client:
         - address: primary-broker-1
           port: 9091
         - address: primary-broker-2
+          port: 9091
+        - address: primary-broker-3
+          port: 9091
+        - address: primary-broker-4
           port: 9091

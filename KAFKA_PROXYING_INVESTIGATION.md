@@ -1,6 +1,6 @@
-# Kafka Proxying with Envoy - Investigation
+# Kafka proxying with Envoy - investigation
 
-## The Problem We Encountered
+## The problem we hit
 
 When we configured brokers to advertise `envoy:9092/9093/9094`, the system broke with these symptoms:
 - Schema Registry returned `broker_not_available` errors
@@ -9,16 +9,16 @@ When we configured brokers to advertise `envoy:9092/9093/9094`, the system broke
 
 **Root cause:** Kafka's metadata protocol creates circular dependencies when using simple TCP proxying.
 
-## Why TCP Proxying Kafka Is Complex
+## Why TCP proxying Kafka is complex
 
-### How Kafka Clients Work
+### How Kafka clients work
 
 1. **Bootstrap connection**: Client connects to `envoy:9092`
 2. **Metadata request**: Client asks "what brokers exist?"
 3. **Metadata response**: Broker replies with advertised addresses
 4. **Direct connections**: Client connects directly to those advertised addresses for all subsequent traffic
 
-### The Circular Dependency Problem
+### The circular dependency problem
 
 When brokers advertise `envoy:XXXX`:
 
@@ -44,7 +44,7 @@ primary-broker-0 → Schema Registry
 
 Internal Redpanda services (Schema Registry, inter-broker replication) also use the advertised Kafka addresses, creating loops.
 
-## Current Demo Architecture (What Works)
+## Current demo architecture (what works)
 
 Our current setup demonstrates failover, but clients bypass Envoy after bootstrap:
 
@@ -71,11 +71,11 @@ Our current setup demonstrates failover, but clients bypass Envoy after bootstra
 - RPK clients work perfectly because they connect directly through Envoy each time
 - Python clients work but don't benefit from Envoy after initial metadata fetch
 
-## Solutions for True Transparent Proxying
+## Solutions for true transparent proxying
 
-### Solution 1: Envoy Kafka Filter (Recommended)
+### Solution 1: Envoy Kafka filter (recommended)
 
-Envoy has a **Kafka broker filter** that understands the Kafka protocol and can rewrite metadata responses.
+Envoy has a Kafka broker filter that understands the Kafka protocol and can rewrite metadata responses.
 
 **How it works:**
 1. Client connects to `envoy:9092`
@@ -106,26 +106,24 @@ filter_chains:
           port: 9094
 ```
 
-**Benefits:**
-- Truly transparent - clients only know about Envoy
+**Pros:**
+- Transparent -- clients only know about Envoy
 - Works with all Kafka clients
-- Brokers continue advertising their real addresses internally
+- Brokers keep advertising their real addresses internally
 - No circular dependencies
 
-**Drawbacks:**
-- More complex configuration
-- Envoy needs to parse/rewrite Kafka protocol messages
-- Potential performance overhead
-- Requires Envoy contrib image (not included in standard builds)
+**Cons:**
+- More complex config
+- Envoy has to parse and rewrite Kafka protocol messages
+- Some performance overhead
+- Requires Envoy contrib image (not in the standard build)
 
 **Documentation:**
 - https://www.envoyproxy.io/docs/envoy/latest/configuration/listeners/network_filters/kafka_broker_filter
 
-### Implementation Notes for Solution 1
+### Implementation notes for solution 1
 
-**Critical: Use Envoy Contrib Image**
-
-The Kafka broker filter is a **contrib extension** and is NOT included in the standard Envoy image. You must use the contrib build:
+**You need the Envoy contrib image.** The Kafka broker filter is a contrib extension and is not in the standard Envoy image:
 
 ```yaml
 # docker-compose.yml
@@ -139,11 +137,11 @@ services:
 could not find @type 'type.googleapis.com/envoy.extensions.filters.network.kafka_broker.v3.KafkaBroker'
 ```
 
-The standard Envoy image does not compile contrib filters to keep the binary size smaller. The contrib image includes additional filters like `kafka_broker`, `kafka_mesh`, `postgres_proxy`, `mysql_proxy`, and other extensions.
+The standard image doesn't compile contrib filters (to keep the binary small). The contrib image includes `kafka_broker`, `kafka_mesh`, `postgres_proxy`, `mysql_proxy`, and others.
 
-**Data Replication Required for Production**
+**Data replication is required for production.**
 
-This demo has independent primary and secondary clusters with NO data replication. During failover, you may see errors like:
+This demo has independent clusters with no data replication. During failover you'll see:
 
 ```
 NotLeaderForPartitionError: [Error 6]
@@ -155,46 +153,34 @@ NotLeaderForPartitionError: [Error 6]
 3. Producer (with cached metadata) tries to write to partition 0
 4. Secondary-broker-0 responds: "I'm broker 0, but I don't have YOUR partition - that's on a different cluster!"
 
-Both clusters have node IDs 0, 1, 2, but they're **different clusters** with different partition assignments.
+Both clusters have node IDs 0, 1, 2, but they're different clusters with different partition assignments.
 
-**Solution: Implement Data Replication**
+**Fix: add data replication.**
 
-For production transparent failover, use one of these replication strategies:
+For production failover, use one of:
 
-1. **Redpanda Remote Read Replicas** (recommended)
-   - Native Redpanda feature for failover
-   - Read-only secondary cluster kept in sync
-   - Automatic promotion on primary failure
+1. **Redpanda Remote Read Replicas** -- native feature, read-only secondary kept in sync, automatic promotion on failure
    - https://docs.redpanda.com/current/deploy/deployment-option/cloud/remote-read-replicas/
 
-2. **MirrorMaker 2.0**
-   - Kafka-native replication between clusters
-   - Active-passive or active-active topologies
-   - Preserves consumer group offsets
+2. **MirrorMaker 2.0** -- Kafka-native replication, active-passive or active-active, preserves consumer group offsets
 
-3. **Redpanda Connect (formerly Benthos)**
-   - Flexible streaming pipelines
-   - Custom transformation during replication
+3. **Redpanda Connect** -- flexible streaming pipelines with custom transformations
    - https://docs.redpanda.com/redpanda-connect/
 
-With replication in place:
-- Both clusters have identical topics and data
-- Failover is seamless - no NotLeaderForPartitionError
-- Consumers can continue from their last committed offsets
+With replication in place, both clusters have the same data, there's no NotLeaderForPartitionError, and consumers can pick up from their last committed offset.
 
-**Current Demo Behavior:**
+**What the demo covers without replication:**
 
-Without replication, the demo demonstrates:
-- ✅ Envoy Kafka filter successfully rewrites metadata
-- ✅ All client traffic flows through Envoy
-- ✅ Health check-based failover routing
-- ✅ Priority-based cluster selection
-- ⚠️ NotLeaderForPartitionError during failover (expected without replication)
-- ⚠️ Data written to primary is not available on secondary
+- Envoy Kafka filter rewrites metadata correctly
+- All client traffic flows through Envoy
+- Health check-based failover routing works
+- Priority-based cluster selection works
+- NotLeaderForPartitionError during failover (expected without replication)
+- Data written to primary is not on secondary
 
-This is sufficient for demonstrating the Kafka filter mechanics, but production requires replication.
+Good enough for showing the mechanics. Production needs replication.
 
-### Solution 2: Multiple Listener Names
+### Solution 2: Multiple listener names
 
 Redpanda supports multiple advertised listener names. Use different addresses for internal vs external:
 
@@ -224,17 +210,17 @@ bootstrap_servers=['envoy:9092']
 client_listener_name='external_proxy'
 ```
 
-**Benefits:**
+**Pros:**
 - Separates internal and external traffic
 - No metadata rewriting needed
 - Internal services work normally
 
-**Drawbacks:**
-- Requires client configuration (not truly transparent)
+**Cons:**
+- Requires client configuration (not transparent)
 - Not all Kafka clients support listener name selection
-- Still have circular routing for external traffic
+- Still has circular routing for external traffic
 
-### Solution 3: Network Segmentation with DNS
+### Solution 3: Network segmentation with DNS
 
 Use Docker networks and DNS to make broker hostnames resolve differently from different locations:
 
@@ -262,16 +248,16 @@ services:
     # Custom DNS: primary-broker-0 → envoy IP
 ```
 
-**Benefits:**
+**Pros:**
 - No configuration changes needed
 - Transparent to clients and brokers
 
-**Drawbacks:**
+**Cons:**
 - Complex network setup
-- Fragile - easy to misconfigure
+- Fragile, easy to misconfigure
 - Doesn't work well in Kubernetes/cloud environments
 
-### Solution 4: Kafka-Aware Proxy (Alternative to Envoy)
+### Solution 4: Kafka-aware proxy (alternative to Envoy)
 
 For production, consider dedicated Kafka proxies:
 
@@ -296,28 +282,28 @@ For production, consider dedicated Kafka proxies:
    - Handles metadata rewriting
    - https://github.com/grepplabs/kafka-proxy
 
-## Recommendation for This Demo
+## Recommendation for this demo
 
-**Current approach is fine for demonstrating:**
+The current approach is fine for showing:
 - Envoy health check detection (recovery mode, broker failures)
 - Priority-based routing
-- Automatic failover at the bootstrap level
+- Failover at the bootstrap level
 
-**For production implementation:**
-1. Use **Envoy Kafka filter** if staying with Envoy
-2. Consider **Kafka Proxy** for simpler Kafka-specific needs
-3. Use **Redpanda Remote Read Replicas** which has built-in failover without proxying
+For production:
+1. Use the Envoy Kafka filter if staying with Envoy
+2. Consider Kafka Proxy for simpler Kafka-specific needs
+3. Use Redpanda Remote Read Replicas for built-in failover without proxying
 
-## Testing the Kafka Filter Approach
+## Testing the Kafka filter approach
 
-To test Envoy's Kafka filter, we would need to:
+To test Envoy's Kafka filter, you'd need to:
 
 1. Update `envoy.yaml` to use the `kafka_broker` filter instead of `tcp_proxy`
 2. Configure ID-based broker address rewrite rules
 3. Keep brokers advertising their real addresses for internal traffic
 4. Clients connect to envoy and see envoy addresses in metadata
 
-**Key change:**
+The main change:
 ```yaml
 # Instead of:
 - name: envoy.filters.network.tcp_proxy
@@ -328,23 +314,16 @@ To test Envoy's Kafka filter, we would need to:
     "@type": type.googleapis.com/envoy.extensions.filters.network.kafka_broker.v3.KafkaBroker
 ```
 
-This would require significant Envoy configuration changes but would enable true transparent proxying.
+This requires reworking the Envoy config but gets you true transparent proxying.
 
-## Conclusion
+## Takeaways
 
-**What we learned:**
+What we learned:
 - Simple TCP proxying works for bootstrap but clients bypass it afterward
-- True transparent proxying requires Kafka protocol awareness
+- Transparent proxying requires Kafka protocol awareness
 - Circular dependencies break when brokers advertise proxy addresses
-- Multiple viable solutions exist, each with tradeoffs
+- Several solutions exist, each with tradeoffs
 
-**For this demo:**
-- Current architecture successfully demonstrates Envoy health checking and failover
-- RPK clients work perfectly (connect through Envoy each time)
-- Python clients work but bypass Envoy for data traffic
-- This is acceptable for a PoC/demo
+For this demo, the current architecture works: RPK clients connect through Envoy each time, Python clients work but bypass Envoy for data traffic after bootstrap. Acceptable for a PoC.
 
-**For production:**
-- Implement Envoy Kafka filter for true transparent proxying
-- Or use purpose-built Kafka proxies
-- Or use Redpanda's native failover features (Remote Read Replicas)
+For production, either use the Envoy Kafka filter, a purpose-built Kafka proxy, or Redpanda's native Remote Read Replicas.

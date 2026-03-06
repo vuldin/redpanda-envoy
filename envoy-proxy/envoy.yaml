@@ -64,6 +64,44 @@ static_resources:
             typed_config:
               "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
 
+  # Broker 3 listener - proxies to broker_3_cluster
+  - name: broker_3_listener
+    address:
+      socket_address:
+        protocol: TCP
+        address: 0.0.0.0
+        port_value: 9095
+    filter_chains:
+    - filters:
+      - name: envoy.filters.network.tcp_proxy
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy
+          stat_prefix: broker_3_tcp
+          cluster: broker_3_cluster
+          access_log:
+          - name: envoy.access_loggers.stdout
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+
+  # Broker 4 listener - proxies to broker_4_cluster
+  - name: broker_4_listener
+    address:
+      socket_address:
+        protocol: TCP
+        address: 0.0.0.0
+        port_value: 9096
+    filter_chains:
+    - filters:
+      - name: envoy.filters.network.tcp_proxy
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy
+          stat_prefix: broker_4_tcp
+          cluster: broker_4_cluster
+          access_log:
+          - name: envoy.access_loggers.stdout
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+
   clusters:
   # Broker 0 cluster: primary-broker-0 (priority 0) + secondary-broker-0 (priority 1)
   - name: broker_0_cluster
@@ -93,7 +131,10 @@ static_resources:
                 address: primary-broker-0
                 port_value: 9092
             health_check_config:
-              port_value: 8081
+              address:
+                socket_address:
+                  address: 172.30.0.100
+                  port_value: 8080
       - priority: 1
         lb_endpoints:
         - endpoint:
@@ -102,7 +143,10 @@ static_resources:
                 address: secondary-broker-0
                 port_value: 9092
             health_check_config:
-              port_value: 8081
+              address:
+                socket_address:
+                  address: 172.30.0.100
+                  port_value: 8082
     common_lb_config:
       healthy_panic_threshold:
         value: 0.0
@@ -141,7 +185,10 @@ static_resources:
                 address: primary-broker-1
                 port_value: 9092
             health_check_config:
-              port_value: 8081
+              address:
+                socket_address:
+                  address: 172.30.0.100
+                  port_value: 8080
       - priority: 1
         lb_endpoints:
         - endpoint:
@@ -150,7 +197,10 @@ static_resources:
                 address: secondary-broker-1
                 port_value: 9092
             health_check_config:
-              port_value: 8081
+              address:
+                socket_address:
+                  address: 172.30.0.100
+                  port_value: 8082
     common_lb_config:
       healthy_panic_threshold:
         value: 0.0
@@ -189,7 +239,10 @@ static_resources:
                 address: primary-broker-2
                 port_value: 9092
             health_check_config:
-              port_value: 8081
+              address:
+                socket_address:
+                  address: 172.30.0.100
+                  port_value: 8080
       - priority: 1
         lb_endpoints:
         - endpoint:
@@ -198,7 +251,118 @@ static_resources:
                 address: secondary-broker-2
                 port_value: 9092
             health_check_config:
-              port_value: 8081
+              address:
+                socket_address:
+                  address: 172.30.0.100
+                  port_value: 8082
+    common_lb_config:
+      healthy_panic_threshold:
+        value: 0.0
+    outlier_detection:
+      consecutive_5xx: 3
+      consecutive_gateway_failure: 3
+      interval: 10s
+      base_ejection_time: 30s
+      max_ejection_percent: 50
+
+  # Broker 3 cluster: primary-broker-3 (priority 0) + secondary-broker-0 (priority 1, wraps around)
+  - name: broker_3_cluster
+    connect_timeout: 5s
+    type: STRICT_DNS
+    lb_policy: ROUND_ROBIN
+    health_checks:
+    - timeout: 2s
+      interval: 3s
+      interval_jitter: 0.5s
+      unhealthy_threshold: 3
+      healthy_threshold: 2
+      http_health_check:
+        path: /schemas/types
+      no_traffic_interval: 3s
+      unhealthy_interval: 3s
+      unhealthy_edge_interval: 3s
+      healthy_edge_interval: 3s
+    load_assignment:
+      cluster_name: broker_3_cluster
+      endpoints:
+      - priority: 0
+        lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: primary-broker-3
+                port_value: 9092
+            health_check_config:
+              address:
+                socket_address:
+                  address: 172.30.0.100
+                  port_value: 8080
+      - priority: 1
+        lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: secondary-broker-0
+                port_value: 9092
+            health_check_config:
+              address:
+                socket_address:
+                  address: 172.30.0.100
+                  port_value: 8082
+    common_lb_config:
+      healthy_panic_threshold:
+        value: 0.0
+    outlier_detection:
+      consecutive_5xx: 3
+      consecutive_gateway_failure: 3
+      interval: 10s
+      base_ejection_time: 30s
+      max_ejection_percent: 50
+
+  # Broker 4 cluster: primary-broker-4 (priority 0) + secondary-broker-1 (priority 1, wraps around)
+  - name: broker_4_cluster
+    connect_timeout: 5s
+    type: STRICT_DNS
+    lb_policy: ROUND_ROBIN
+    health_checks:
+    - timeout: 2s
+      interval: 3s
+      interval_jitter: 0.5s
+      unhealthy_threshold: 3
+      healthy_threshold: 2
+      http_health_check:
+        path: /schemas/types
+      no_traffic_interval: 3s
+      unhealthy_interval: 3s
+      unhealthy_edge_interval: 3s
+      healthy_edge_interval: 3s
+    load_assignment:
+      cluster_name: broker_4_cluster
+      endpoints:
+      - priority: 0
+        lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: primary-broker-4
+                port_value: 9092
+            health_check_config:
+              address:
+                socket_address:
+                  address: 172.30.0.100
+                  port_value: 8080
+      - priority: 1
+        lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: secondary-broker-1
+                port_value: 9092
+            health_check_config:
+              address:
+                socket_address:
+                  address: 172.30.0.100
+                  port_value: 8082
     common_lb_config:
       healthy_panic_threshold:
         value: 0.0

@@ -1,6 +1,6 @@
-# Frequently Asked Questions
+# FAQ
 
-## TLS and Certificates
+## TLS and certificates
 
 ### Do I need to make changes to my TLS certificates?
 
@@ -12,7 +12,7 @@ Both primary **and** secondary cluster certificates need this SAN, since either 
 
 ### What is a SAN?
 
-SAN stands for **Subject Alternative Name**. It's a field in a TLS certificate that lists additional hostnames or IP addresses the certificate is valid for, beyond the Common Name (CN). Modern TLS clients use SANs (not the CN) for hostname verification.
+SAN stands for Subject Alternative Name. It's a field in a TLS certificate that lists hostnames or IP addresses the certificate is valid for, in addition to the Common Name (CN). Modern TLS clients check SANs, not the CN, for hostname verification.
 
 For example, a broker certificate might have:
 ```
@@ -29,7 +29,7 @@ openssl x509 -in broker.crt -noout -text | grep -A1 "Subject Alternative Name"
 
 ### Does Envoy need its own TLS certificates?
 
-No. Envoy uses `tcp_proxy` which operates at L4 (the transport layer). It forwards raw bytes without inspecting them. It has no TLS configuration, no certificates, and never sees the plaintext traffic. The entire TLS handshake happens between the client and the broker, tunneled through Envoy.
+No. Envoy uses `tcp_proxy` at L4 -- it forwards raw bytes without inspecting them. No TLS configuration, no certificates, never sees plaintext. The TLS handshake happens between the client and the broker, tunneled through Envoy.
 
 ### Can I use mutual TLS (mTLS)?
 
@@ -43,7 +43,7 @@ Either works. In this demo, each broker gets its own certificate (with CN set to
 
 ### Why aren't the certificate private keys locked down to 0600?
 
-In this demo, key files are `chmod 644` because the Redpanda process runs as UID 101 inside the container, which is different from the user who generates the certificates on the host. In a production environment, you would set proper ownership (`chown 101:101`) on the key files and use more restrictive permissions.
+In this demo, key files are `chmod 644` because the Redpanda process runs as UID 101 inside the container, which differs from the host user that generates the certs. In production, set proper ownership (`chown 101:101`) on the key files and use `0600` permissions.
 
 ## Architecture
 
@@ -62,7 +62,7 @@ Envoy never decrypts anything. From Envoy's perspective, it's just moving opaque
 
 ### If advertised listeners point to Envoy, how does TLS terminate at the broker?
 
-The `advertised_kafka_api` for the client-facing listener is set to the **Envoy** address (e.g., `envoy:9092`), not the broker address. This is correct - all client traffic must route through the proxy. When a client gets metadata, it sees every broker at `envoy:9092`, `envoy:9093`, `envoy:9094`.
+The `advertised_kafka_api` for the client-facing listener is set to the **Envoy** address (e.g., `envoy:9092`), not the broker address. This is correct - all client traffic must route through the proxy. When a client gets metadata, it sees every broker at `envoy:9092`, `envoy:9093`, `envoy:9094`, `envoy:9095`, `envoy:9096`.
 
 TLS still terminates at the broker because Envoy's `tcp_proxy` is just a byte pipe between two TCP connections:
 
@@ -81,7 +81,7 @@ Client                    Envoy                     Broker
   |===== encrypted Kafka traffic flows both ways =====|
 ```
 
-Envoy opens two independent TCP connections (client-to-Envoy and Envoy-to-broker) and copies bytes between them without interpreting them. The TLS handshake, key exchange, and decryption all happen between the client and the broker. The broker holds the private key, performs the handshake, and decrypts the traffic. Envoy never sees plaintext and has zero TLS configuration.
+Envoy opens two TCP connections (client-to-Envoy and Envoy-to-broker) and copies bytes between them without interpreting anything. The TLS handshake, key exchange, and decryption all happen between the client and the broker. The broker holds the private key and does the decryption. Envoy never sees plaintext.
 
 This is why the broker certificate must include the Envoy hostname as a SAN: the client connects to `envoy:9092` but receives a certificate from the broker. Without the Envoy hostname in the SAN, the client's hostname verification would fail because the name it connected to (`envoy`) wouldn't match the certificate.
 
@@ -117,7 +117,7 @@ The `local` plaintext listener exists to avoid a **startup deadlock** (see next 
 When TLS is enabled on the Kafka API, Redpanda's internal Schema Registry client needs to connect to the Kafka API to initialize. Without the `local` listener, the following deadlock occurs:
 
 1. Schema Registry connects to the Kafka API, discovers the advertised address is `envoy:9092`, and tries to connect through Envoy
-2. Envoy health-checks Schema Registry (HTTP on port 8081), but Schema Registry isn't initialized yet, so it returns an error
+2. Envoy health-checks the health aggregator, which checks Schema Registry (HTTP on port 8081), but Schema Registry isn't initialized yet, so the aggregator reports unhealthy
 3. Envoy marks all brokers as unhealthy and stops routing traffic
 4. Schema Registry can never connect through Envoy, so it never initializes
 5. Permanent deadlock
@@ -126,23 +126,95 @@ The fix: give Schema Registry its own plaintext Kafka listener (`local` on port 
 
 ### Does the plaintext `local` listener create a security risk?
 
-The `local` listener is only accessible within the internal Docker network (or your private network). It is not exposed to clients and is not advertised through Envoy. In production, you would ensure this listener is only reachable from the broker hosts themselves (via network policies or firewall rules). It serves the same role as any internal management port.
+The `local` listener is only accessible within the Docker network (or your private network). It's not exposed to clients and not advertised through Envoy. In production, restrict it to broker hosts only via network policies or firewall rules. It's the same as any other internal management port.
+
+### What is the health aggregator, and why wasn't it needed before?
+
+The health aggregator is a small Python HTTP server (`health-aggregator/aggregator.py`) that checks Schema Registry on every broker every 2 seconds. It exposes two HTTP endpoints: port 8080 for the primary cluster, port 8082 for secondary. Each endpoint returns 200 if a majority of that cluster's brokers are healthy (≥3/5 for primary, ≥2/3 for secondary) and 503 if quorum is lost. Envoy health-checks these two endpoints instead of individual brokers.
+
+The earlier version of this demo (3 brokers per cluster) didn't have an aggregator. Envoy used per-broker TCP health checks -- each cluster definition independently checked its own broker and failed over that single port when it went down. If primary-broker-0 died, port 9092 would flip to secondary while ports 9093 and 9094 stayed on primary. That's split-brain routing, and Redpanda doesn't work that way. Losing a majority of brokers means the whole cluster loses Raft quorum and can't serve requests, even on the brokers that are still running.
+
+Moving to 5 primary brokers made the split-brain problem worse and more visible. The aggregator was added so Envoy could make one quorum decision per cluster and fail over all ports together. When the aggregator returns 503 for primary, all 5 Envoy listeners flip to secondary at the same time.
 
 ### Why use Schema Registry for health checks instead of the Admin API?
 
-The Admin API (port 9644) stays available even in **recovery mode**, so Envoy can't detect that a broker is in a degraded state. Schema Registry, on the other hand, is disabled in recovery mode. This makes it an ideal health check target: if Schema Registry stops responding, Envoy correctly identifies the broker as unhealthy and fails over to the secondary cluster.
+The Admin API (port 9644) stays up in recovery mode, so checking it wouldn't tell Envoy anything is wrong. Schema Registry is disabled in recovery mode. So if Schema Registry stops responding, the health aggregator counts that broker as unhealthy. When enough brokers are unhealthy (quorum lost), Envoy fails over the cluster.
 
-### Why does Envoy have one listener per broker (ports 9092, 9093, 9094)?
+### Why is there a health aggregator instead of Envoy checking brokers directly?
 
-Kafka clients discover all brokers via metadata and then connect directly to specific brokers for partition leadership. If Envoy had only a single listener, the client would try to connect to the other advertised brokers and fail.
+Envoy's native health checking is per-endpoint. Without the aggregator, each Envoy listener makes independent failover decisions: if primary-broker-0 goes down, only port 9092 fails over while ports 9093-9096 stay on primary. That doesn't match how Redpanda works -- losing a majority of brokers means the whole cluster loses Raft quorum and can't serve writes, even on the remaining "healthy" brokers.
 
-By having one Envoy listener per broker position, each with its own priority-based cluster (primary vs. secondary), the client's metadata-driven connections are transparently routed to the correct broker on either cluster.
+The aggregator checks all brokers and makes a single quorum decision per cluster:
+- Primary: returns 200 if ≥3/5 brokers have healthy Schema Registry, 503 otherwise
+- Secondary: returns 200 if ≥2/3 brokers are healthy, 503 otherwise
+
+Envoy health-checks the aggregator instead of individual brokers. When the aggregator returns 503, all primary endpoints across all 5 Envoy clusters get marked unhealthy at once, triggering cluster-wide failover.
+
+### How does Envoy route health checks to the aggregator instead of the broker?
+
+Each endpoint in the Envoy config uses `health_check_config.address` to redirect health checks to the aggregator while keeping data traffic pointed at the actual broker:
+
+```yaml
+endpoint:
+  address:
+    socket_address:
+      address: primary-broker-0     # Data traffic goes here
+      port_value: 9092
+  health_check_config:
+    address:
+      socket_address:
+        address: 172.30.0.100       # Health checks go here (aggregator IP)
+        port_value: 8080            # Primary cluster quorum endpoint
+```
+
+This separation means Envoy checks cluster-wide quorum (via the aggregator) but routes actual Kafka traffic to the correct individual broker.
+
+**Important**: `health_check_config.address` requires an IP address, not a DNS hostname. Using a hostname like `health-aggregator` causes Envoy to crash with `malformed IP address`. The health aggregator is assigned a static IP (`172.30.0.100`) in Docker Compose via `networks.redpanda-net.ipv4_address`.
+
+### Why does the Envoy config use an IP address (172.30.0.100) instead of the hostname `health-aggregator`?
+
+Envoy's `health_check_config.address` field only accepts IP addresses, not DNS hostnames. If you use a hostname, Envoy crashes on startup with:
+
+```
+EnvoyException in c-ares callback: malformed IP address: health-aggregator
+```
+
+This is an Envoy limitation -- the `address` field in `health_check_config` is parsed as a raw IP, bypassing DNS resolution. The workaround is to give the health aggregator a static IP (`172.30.0.100`) in Docker Compose:
+
+```yaml
+health-aggregator:
+  networks:
+    redpanda-net:
+      ipv4_address: 172.30.0.100
+```
+
+The Docker network is configured with a fixed subnet (`172.30.0.0/24`) to ensure the static IP is valid. In production, you would use a known IP or a service mesh that provides stable IPs.
+
+### Why does Envoy have one listener per broker (ports 9092-9096)?
+
+Kafka clients discover all brokers via metadata and then connect directly to specific brokers for partition leadership. If Envoy had only a single listener, the client would try to connect to the other advertised broker addresses and fail.
+
+With one Envoy listener per broker position, each backed by its own priority-based cluster (primary vs. secondary), the client's metadata-driven connections get routed to the right broker on whichever cluster is active.
+
+### Can the primary and secondary clusters have different numbers of brokers?
+
+Yes. This demo uses an asymmetric configuration: 5 primary brokers and 3 secondary brokers. Envoy maps each primary broker to a secondary broker for failover. When the secondary cluster has fewer brokers, the extra primary ports wrap around:
+
+| Envoy Port | Primary Broker (Priority 0) | Secondary Broker (Priority 1) |
+|---|---|---|
+| 9092 | primary-broker-0 | secondary-broker-0 |
+| 9093 | primary-broker-1 | secondary-broker-1 |
+| 9094 | primary-broker-2 | secondary-broker-2 |
+| 9095 | primary-broker-3 | secondary-broker-0 (wraps) |
+| 9096 | primary-broker-4 | secondary-broker-1 (wraps) |
+
+After failover, clients on ports 9095/9096 initially connect to secondary-broker-0/1 (duplicating ports 9092/9093). The next metadata refresh (within 5 seconds, via `metadata_max_age_ms`) corrects the client's view to the 3-broker secondary topology. This brief overlap is harmless -- Kafka clients rebalance connections based on metadata.
 
 ### What does `healthy_panic_threshold: 0.0` do?
 
 It disables Envoy's "panic mode." Normally, when the number of healthy hosts in a priority level drops below the panic threshold, Envoy routes to all hosts regardless of health status. Setting it to 0.0 means Envoy **never** does this - when all brokers in a priority level are unhealthy, traffic cleanly overflows to the next priority level (secondary cluster) instead of being sent to unhealthy primary brokers.
 
-## Failover Behavior
+## Failover behavior
 
 ### How long does failover take?
 
@@ -150,11 +222,11 @@ With the default configuration:
 - **Primary failure detection**: ~12 seconds (3 consecutive failed health checks at 3-second intervals)
 - **Failback after primary recovers**: ~6-7 seconds (2 consecutive successful health checks)
 
-During the detection window, client connections may fail or timeout. Kafka clients with retry logic will reconnect automatically.
+During the detection window, client connections may fail or timeout. Kafka clients with retry logic reconnect automatically.
 
 ### Do my clients need any code changes for failover?
 
-No application code changes are needed. Clients connect to Envoy's address and Envoy handles the routing. However, for a smoother failover experience, you should tune your client configuration:
+No code changes. Clients connect to Envoy's address and Envoy handles routing. You should tune your client config for faster failover though:
 
 - **`metadata_max_age_ms`**: Lower to 3000-5000ms (default is 5 minutes) so clients discover the new broker topology faster
 - **`request_timeout_ms`**: Lower to 10000-20000ms for faster failure detection
@@ -171,6 +243,10 @@ In production, you would use a replication mechanism (Redpanda Connect, MirrorMa
 Yes, several ways:
 
 ```bash
+# Check health aggregator quorum status
+curl -s localhost:8080/status | python3 -m json.tool   # Primary cluster
+curl -s localhost:8082/status | python3 -m json.tool   # Secondary cluster
+
 # Check Envoy health flags (healthy = primary, failed_active_hc = secondary takes over)
 curl -s http://localhost:9901/clusters | grep health_flags
 
@@ -182,11 +258,11 @@ openssl s_client -connect localhost:9092 -CAfile certs/ca.crt 2>&1 | grep "subje
 ./failover-demo.sh routing
 ```
 
-## Envoy Configuration
+## Envoy configuration
 
 ### Does the Envoy configuration change at all for TLS passthrough?
 
-No. The Envoy configuration is **identical** whether clients use plaintext or TLS. The `tcp_proxy` filter just forwards bytes. This is the key advantage of TLS passthrough: you get Envoy's failover capabilities without touching the Envoy config or giving Envoy access to any certificates.
+No. The Envoy config is identical whether clients use plaintext or TLS. The `tcp_proxy` filter just forwards bytes. You get Envoy's failover without touching the Envoy config or giving Envoy access to any certificates.
 
 ### Can Envoy inspect or log the Kafka traffic when TLS passthrough is enabled?
 
@@ -194,23 +270,24 @@ No. With TLS passthrough, the traffic is encrypted and Envoy cannot inspect it. 
 
 ### How do Envoy's health checks work if the Kafka traffic is encrypted?
 
-Health checks and data traffic use **different ports**. Envoy sends HTTP health checks to Schema Registry on port 8081 (plaintext), while client Kafka traffic goes to port 9092 (TLS). The `health_check_config.port_value: 8081` in each endpoint tells Envoy to health-check on a different port than the data port. This separation means health checks work without any TLS configuration on Envoy.
+Health checks and data traffic go to different places. Envoy sends HTTP health checks to the health aggregator (ports 8080/8082, plaintext), while client Kafka traffic goes to individual brokers on port 9092 (TLS). The `health_check_config.address` in each endpoint redirects health checks to the aggregator, which checks Schema Registry (port 8081) on all brokers internally. So health checks work without any TLS configuration on Envoy.
 
-## Production Considerations
+## Production considerations
 
 ### What changes would I need for a production deployment?
 
-1. **DNS name for Envoy**: Replace `envoy` with a real DNS name (e.g., `kafka.example.com`) in the broker's `advertised_kafka_api` and in your certificate SANs
-2. **Certificate management**: Use a proper CA (not self-signed). Integrate with your certificate rotation process
-3. **Network security**: Restrict the `local` listener (port 9091) to internal traffic only via network policies
-4. **Data replication**: Configure Redpanda Connect, MirrorMaker 2, or Remote Read Replicas between clusters
-5. **Consumer group offset sync**: Use offset translation tools to align consumer positions across clusters
-6. **Monitoring**: Export Envoy metrics to your monitoring stack; alert on health check transitions
-7. **Multiple Envoy instances**: Run multiple Envoy proxies behind a load balancer for high availability of the proxy layer itself
+1. **DNS name for Envoy** -- replace `envoy` with a real DNS name (e.g., `kafka.example.com`) in `advertised_kafka_api` and in your certificate SANs
+2. **Certificate management** -- use a proper CA (not self-signed) and integrate with your cert rotation process
+3. **Network security** -- restrict the `local` listener (port 9091) to internal traffic only via network policies
+4. **Data replication** -- configure Redpanda Connect, MirrorMaker 2, or Remote Read Replicas between clusters
+5. **Consumer group offset sync** -- use offset translation tools to align consumer positions across clusters
+6. **Monitoring** -- export Envoy metrics to your monitoring stack and alert on health check transitions
+7. **Multiple Envoy instances** -- run multiple Envoy proxies behind a load balancer for proxy-layer HA
+8. **Health aggregator HA** -- run multiple aggregator instances or embed quorum logic at the proxy layer
 
 ### Can I use this with an existing load balancer (AWS NLB, HAProxy, etc.) instead of Envoy?
 
-Yes. Any L4 (TCP) load balancer that supports health checks and priority-based routing can replace Envoy in this architecture. The TLS passthrough concept is the same regardless of the proxy: the load balancer forwards TCP bytes, and TLS terminates at the broker. AWS NLB in TCP mode and HAProxy in `mode tcp` are common alternatives. The key requirements are:
+Yes. Any L4 (TCP) load balancer with health checks and priority-based routing can replace Envoy here. The concept is the same: the load balancer forwards TCP bytes and TLS terminates at the broker. AWS NLB in TCP mode and HAProxy in `mode tcp` are common alternatives. You need:
 
 - Priority-based routing (primary preferred over secondary)
 - Active health checks to detect broker failures
@@ -229,4 +306,4 @@ Yes. Any L4 (TCP) load balancer that supports health checks and priority-based r
 | Performance | Slightly better (no double encrypt) | Slightly worse |
 | Complexity | Lower | Higher |
 
-TLS passthrough is the right choice when your clients already have TLS configured to the broker and you don't want to change that relationship. TLS termination at Envoy is needed if you want Envoy to inspect or modify Kafka protocol traffic.
+TLS passthrough works when your clients already have TLS configured to the broker and you don't want to change that. TLS termination at Envoy is needed if you want Envoy to inspect or modify Kafka protocol traffic.
