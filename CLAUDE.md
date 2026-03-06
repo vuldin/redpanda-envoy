@@ -162,7 +162,7 @@ docker logs redpanda-migrator -f
   sudo chown -R 101:101 redpanda-config/
   ```
   Note: Docker Desktop on macOS and Windows handle volume permissions automatically and don't require this step
-- **Recovery mode**: Set via `rpk redpanda mode recovery` (running broker) or use `yq` for stopped brokers:
+- **Recovery mode**: `rpk redpanda mode recovery` inside the container fails because mounted config dirs aren't writable by the Redpanda process. Use `yq` from the host instead:
   ```bash
   # Go-based yq (mikefarah/yq):
   yq '.redpanda.recovery_mode_enabled = true' -i redpanda-config/[broker]/redpanda.yaml

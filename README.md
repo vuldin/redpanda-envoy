@@ -174,87 +174,83 @@ This walkthrough shows Envoy refusing to route traffic to a cluster in recovery 
 
    **Note**: To trigger failover by stopping all 5: `./failover-demo.sh fail-primary`
 
-7. **Put a running broker into recovery mode:**
-   ```bash
-   docker exec -it primary-broker-0 rpk redpanda mode recovery
-   docker restart primary-broker-0
-   ```
+7. **Put all primary brokers into recovery mode:**
 
-   Brokers 0 and 1 are still running, so we can exec into broker-0 to enable recovery mode.
-
-8. **Verify the broker is now in recovery mode:**
-   ```bash
-   docker exec -it primary-broker-0 rpk cluster health
-   ```
-
-   Look for "Nodes in recovery mode: [0]" showing broker 0 is in recovery.
-
-   Watch the routing monitor -- Envoy sees Schema Registry is down and keeps routing to secondary.
-
-   **Note**: May take 10-12 seconds for Envoy's health checks to register the change.
-
-9. **Edit config and restart the stopped brokers in recovery mode:**
-
-   Brokers 2, 3, and 4 are stopped, so we use `yq` to edit their config files on disk, then start them.
+   Since the config directories are mounted from the host, use `yq` to edit the config files directly. This works for both running and stopped brokers.
 
    **If you have Go-based yq (mikefarah/yq):**
    ```bash
-   yq '.redpanda.recovery_mode_enabled = true' -i redpanda-config/primary-broker-2/redpanda.yaml
-   yq '.redpanda.recovery_mode_enabled = true' -i redpanda-config/primary-broker-3/redpanda.yaml
-   yq '.redpanda.recovery_mode_enabled = true' -i redpanda-config/primary-broker-4/redpanda.yaml
-   docker start primary-broker-2 primary-broker-3 primary-broker-4
+   for i in 0 1 2 3 4; do
+     yq '.redpanda.recovery_mode_enabled = true' -i redpanda-config/primary-broker-$i/redpanda.yaml
+   done
    ```
 
    **If you have Python-based yq (kislyuk/yq):**
    ```bash
-   yq -y '.redpanda.recovery_mode_enabled = true' redpanda-config/primary-broker-2/redpanda.yaml > /tmp/temp2.yaml && mv /tmp/temp2.yaml redpanda-config/primary-broker-2/redpanda.yaml
-   yq -y '.redpanda.recovery_mode_enabled = true' redpanda-config/primary-broker-3/redpanda.yaml > /tmp/temp3.yaml && mv /tmp/temp3.yaml redpanda-config/primary-broker-3/redpanda.yaml
-   yq -y '.redpanda.recovery_mode_enabled = true' redpanda-config/primary-broker-4/redpanda.yaml > /tmp/temp4.yaml && mv /tmp/temp4.yaml redpanda-config/primary-broker-4/redpanda.yaml
-   docker start primary-broker-2 primary-broker-3 primary-broker-4
+   for i in 0 1 2 3 4; do
+     yq -y '.redpanda.recovery_mode_enabled = true' redpanda-config/primary-broker-$i/redpanda.yaml > /tmp/temp$i.yaml && mv /tmp/temp$i.yaml redpanda-config/primary-broker-$i/redpanda.yaml
+   done
    ```
 
-   Also put broker-1 into recovery mode (it's still running):
+   **On Linux**, fix permissions if needed: `sudo chown -R 101:101 redpanda-config/`
+
+   Start the stopped brokers and restart the running ones:
    ```bash
-   docker exec -it primary-broker-1 rpk redpanda mode recovery
-   docker restart primary-broker-1
+   docker start primary-broker-2 primary-broker-3 primary-broker-4
+   docker restart primary-broker-0 primary-broker-1
    ```
 
-10. **Verify all primary brokers are in recovery mode:**
-    ```bash
-    docker exec -it primary-broker-0 rpk cluster health
-    ```
+   **Note**: `rpk redpanda mode recovery` inside the container won't work because the mounted config directory isn't writable by the Redpanda process.
 
-    Expected output showing cluster is healthy but all nodes are in recovery mode:
-    ```
-    CLUSTER HEALTH OVERVIEW
-    =======================
-    Healthy:                          true
-    Unhealthy reasons:                []
-    Controller ID:                    0
-    All nodes:                        [0 1 2 3 4]
-    Nodes down:                       []
-    Nodes in recovery mode:           [0 1 2 3 4]
-    Leaderless partitions (0):        []
-    Under-replicated partitions (0):  []
-    ```
+8. **Verify all primary brokers are in recovery mode:**
 
-    Notice: the cluster reports "Healthy: true" but all nodes are in "Nodes in recovery mode: [0 1 2 3 4]".
+   Wait for all brokers to come up (~10-15 seconds), then check:
+   ```bash
+   docker exec primary-broker-0 rpk cluster health
+   ```
 
-    Watch the routing monitor -- Envoy still routes to secondary because Schema Registry is disabled in recovery mode.
+   Expected output:
+   ```
+   CLUSTER HEALTH OVERVIEW
+   =======================
+   Healthy:                          true
+   Unhealthy reasons:                []
+   Controller ID:                    0
+   All nodes:                        [0 1 2 3 4]
+   Nodes down:                       []
+   Nodes in recovery mode:           [0 1 2 3 4]
+   Leaderless partitions (0):        []
+   Under-replicated partitions (0):  []
+   ```
 
-11. **Take primary cluster out of recovery mode:**
-    ```bash
-    for i in 0 1 2 3 4; do
-      docker exec primary-broker-$i rpk redpanda mode dev
-      docker restart primary-broker-$i
-    done
-    ```
+   The cluster reports "Healthy: true" but all nodes are in recovery mode. Envoy still routes to secondary because Schema Registry is disabled in recovery mode.
 
-    **Note**: The restart is required for the mode change to take effect. For production deployments, replace `dev` with `prod` or `production`.
+9. **Take primary cluster out of recovery mode:**
 
-    As each broker exits recovery mode and restarts, Schema Registry comes back up. Once the last broker is out of recovery mode, Envoy detects the primary cluster is healthy again and routes traffic back to it.
+   **If you have Go-based yq (mikefarah/yq):**
+   ```bash
+   for i in 0 1 2 3 4; do
+     yq 'del(.redpanda.recovery_mode_enabled)' -i redpanda-config/primary-broker-$i/redpanda.yaml
+   done
+   ```
 
-12. **Verify Envoy starts routing traffic back to primary:**
+   **If you have Python-based yq (kislyuk/yq):**
+   ```bash
+   for i in 0 1 2 3 4; do
+     yq -y 'del(.redpanda.recovery_mode_enabled)' redpanda-config/primary-broker-$i/redpanda.yaml > /tmp/temp$i.yaml && mv /tmp/temp$i.yaml redpanda-config/primary-broker-$i/redpanda.yaml
+   done
+   ```
+
+   **On Linux**, fix permissions if needed: `sudo chown -R 101:101 redpanda-config/`
+
+   Restart all primary brokers:
+   ```bash
+   for i in 0 1 2 3 4; do docker restart primary-broker-$i; done
+   ```
+
+   As each broker exits recovery mode, Schema Registry comes back up. Once quorum is restored (≥3/5 healthy), Envoy routes traffic back to primary.
+
+10. **Verify Envoy starts routing traffic back to primary:**
 
     Watch the routing monitor -- traffic shifts back to primary (priority 0) once all brokers are healthy and out of recovery mode.
 

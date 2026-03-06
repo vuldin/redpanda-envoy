@@ -1,116 +1,116 @@
 redpanda:
-    data_directory: /var/lib/redpanda/data
-    node_id: 1
-    seed_servers:
-        - host:
-            address: primary-broker-0
-            port: 33145
-        - host:
-            address: primary-broker-1
-            port: 33145
-        - host:
-            address: primary-broker-2
-            port: 33145
-        - host:
-            address: primary-broker-3
-            port: 33145
-        - host:
-            address: primary-broker-4
-            port: 33145
-    rpc_server:
+  data_directory: /var/lib/redpanda/data
+  node_id: 1
+  seed_servers:
+    - host:
+        address: primary-broker-0
+        port: 33145
+    - host:
         address: primary-broker-1
         port: 33145
-    kafka_api:
-        - address: 0.0.0.0
-          port: 9092
-          name: internal
-        - address: 0.0.0.0
-          port: 9091
-          name: local
-        - address: 0.0.0.0
-          port: 19093
-          name: external
-    kafka_api_tls:
-        - name: internal
-          enabled: true
-          cert_file: /etc/redpanda/certs/primary-broker-1.crt
-          key_file: /etc/redpanda/certs/primary-broker-1.key
-          truststore_file: /etc/redpanda/certs/ca.crt
-          require_client_auth: false
-        - name: external
-          enabled: true
-          cert_file: /etc/redpanda/certs/primary-broker-1.crt
-          key_file: /etc/redpanda/certs/primary-broker-1.key
-          truststore_file: /etc/redpanda/certs/ca.crt
-          require_client_auth: false
-    advertised_rpc_api:
-        address: primary-broker-1
+    - host:
+        address: primary-broker-2
         port: 33145
-    advertised_kafka_api:
-        - address: envoy
-          port: 9093
-          name: internal
-        - address: primary-broker-1
-          port: 9091
-          name: local
-        - address: localhost
-          port: 19093
-          name: external
-    developer_mode: true
-    auto_create_topics_enabled: true
-    fetch_reads_debounce_timeout: 10
-    group_initial_rebalance_delay: 0
-    group_topic_partitions: 3
-    log_segment_size_min: 1
-    storage_min_free_bytes: 10485760
-    topic_partitions_per_shard: 1000
-    write_caching_default: "true"
+    - host:
+        address: primary-broker-3
+        port: 33145
+    - host:
+        address: primary-broker-4
+        port: 33145
+  rpc_server:
+    address: primary-broker-1
+    port: 33145
+  kafka_api:
+    - address: 0.0.0.0
+      port: 9092
+      name: internal
+    - address: 0.0.0.0
+      port: 9091
+      name: local
+    - address: 0.0.0.0
+      port: 19093
+      name: external
+  kafka_api_tls:
+    - name: internal
+      enabled: true
+      cert_file: /etc/redpanda/certs/primary-broker-1.crt
+      key_file: /etc/redpanda/certs/primary-broker-1.key
+      truststore_file: /etc/redpanda/certs/ca.crt
+      require_client_auth: false
+    - name: external
+      enabled: true
+      cert_file: /etc/redpanda/certs/primary-broker-1.crt
+      key_file: /etc/redpanda/certs/primary-broker-1.key
+      truststore_file: /etc/redpanda/certs/ca.crt
+      require_client_auth: false
+  advertised_rpc_api:
+    address: primary-broker-1
+    port: 33145
+  advertised_kafka_api:
+    - address: envoy
+      port: 9093
+      name: internal
+    - address: primary-broker-1
+      port: 9091
+      name: local
+    - address: localhost
+      port: 19093
+      name: external
+  developer_mode: true
+  auto_create_topics_enabled: true
+  fetch_reads_debounce_timeout: 10
+  group_initial_rebalance_delay: 0
+  group_topic_partitions: 3
+  log_segment_size_min: 1
+  storage_min_free_bytes: 10485760
+  topic_partitions_per_shard: 1000
+  write_caching_default: 'true'
 rpk:
-    overprovisioned: true
+  overprovisioned: true
 pandaproxy:
-    pandaproxy_api:
-        - address: 0.0.0.0
-          port: 8082
-          name: internal
-        - address: 0.0.0.0
-          port: 18083
-          name: external
-    advertised_pandaproxy_api:
-        - address: primary-broker-1
-          port: 8082
-          name: internal
-        - address: localhost
-          port: 18083
-          name: external
+  pandaproxy_api:
+    - address: 0.0.0.0
+      port: 8082
+      name: internal
+    - address: 0.0.0.0
+      port: 18083
+      name: external
+  advertised_pandaproxy_api:
+    - address: primary-broker-1
+      port: 8082
+      name: internal
+    - address: localhost
+      port: 18083
+      name: external
 schema_registry:
-    schema_registry_api:
-        - address: 0.0.0.0
-          port: 8081
-          name: internal
-        - address: 0.0.0.0
-          port: 18084
-          name: external
+  schema_registry_api:
+    - address: 0.0.0.0
+      port: 8081
+      name: internal
+    - address: 0.0.0.0
+      port: 18084
+      name: external
 schema_registry_client:
-    brokers:
-        - address: primary-broker-0
-          port: 9091
-        - address: primary-broker-1
-          port: 9091
-        - address: primary-broker-2
-          port: 9091
-        - address: primary-broker-3
-          port: 9091
-        - address: primary-broker-4
-          port: 9091
+  brokers:
+    - address: primary-broker-0
+      port: 9091
+    - address: primary-broker-1
+      port: 9091
+    - address: primary-broker-2
+      port: 9091
+    - address: primary-broker-3
+      port: 9091
+    - address: primary-broker-4
+      port: 9091
 pandaproxy_client:
-    brokers:
-        - address: primary-broker-0
-          port: 9091
-        - address: primary-broker-1
-          port: 9091
-        - address: primary-broker-2
-          port: 9091
-        - address: primary-broker-3
-          port: 9091
-        - address: primary-broker-4
-          port: 9091
+  brokers:
+    - address: primary-broker-0
+      port: 9091
+    - address: primary-broker-1
+      port: 9091
+    - address: primary-broker-2
+      port: 9091
+    - address: primary-broker-3
+      port: 9091
+    - address: primary-broker-4
+      port: 9091
