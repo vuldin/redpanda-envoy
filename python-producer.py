@@ -6,6 +6,7 @@ Connects via Envoy proxy to demonstrate transparent failover
 
 import time
 import sys
+import ssl
 from datetime import datetime
 from kafka import KafkaProducer
 from kafka.errors import KafkaError
@@ -14,12 +15,16 @@ from kafka.errors import KafkaError
 KAFKA_BROKER = 'envoy:9092'
 TOPIC = 'failover-demo-topic'
 MESSAGE_INTERVAL = 2  # seconds
+CA_CERT = '/certs/ca.crt'
 
 def create_producer():
     """Create and configure Kafka producer"""
     return KafkaProducer(
         bootstrap_servers=[KAFKA_BROKER],
         client_id='python-producer',
+        security_protocol='SSL',  # TLS passthrough - terminates at broker
+        ssl_cafile=CA_CERT,       # CA cert to verify broker certificate
+        ssl_check_hostname=True,  # Verify broker cert matches 'envoy' SAN
         acks='all',  # Wait for all replicas
         retries=10,  # Increased retries for better failover handling
         retry_backoff_ms=500,  # Faster retry backoff
@@ -35,8 +40,9 @@ def create_producer():
     )
 
 def main():
-    print(f'🚀 Starting Python Kafka Producer')
+    print(f'🚀 Starting Python Kafka Producer (TLS enabled)')
     print(f'📡 Connecting to: {KAFKA_BROKER}')
+    print(f'🔐 TLS: Enabled (passthrough via Envoy, terminates at broker)')
     print(f'📝 Topic: {TOPIC}')
     print(f'⏱️  Message interval: {MESSAGE_INTERVAL}s')
     print(f'─' * 60)

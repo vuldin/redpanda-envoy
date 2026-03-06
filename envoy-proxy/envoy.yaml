@@ -7,7 +7,7 @@ admin:
 
 static_resources:
   listeners:
-  # Broker 0 listener - proxies to broker_0_cluster and rewrites metadata
+  # Broker 0 listener - proxies to broker_0_cluster
   - name: broker_0_listener
     address:
       socket_address:
@@ -16,21 +16,6 @@ static_resources:
         port_value: 9092
     filter_chains:
     - filters:
-      - name: envoy.filters.network.kafka_broker
-        typed_config:
-          "@type": type.googleapis.com/envoy.extensions.filters.network.kafka_broker.v3.KafkaBroker
-          stat_prefix: kafka_broker_0
-          id_based_broker_address_rewrite_spec:
-            rules:
-            - id: 0
-              host: envoy
-              port: 9092
-            - id: 1
-              host: envoy
-              port: 9093
-            - id: 2
-              host: envoy
-              port: 9094
       - name: envoy.filters.network.tcp_proxy
         typed_config:
           "@type": type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy
@@ -41,7 +26,7 @@ static_resources:
             typed_config:
               "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
 
-  # Broker 1 listener - proxies to broker_1_cluster and rewrites metadata
+  # Broker 1 listener - proxies to broker_1_cluster
   - name: broker_1_listener
     address:
       socket_address:
@@ -50,21 +35,6 @@ static_resources:
         port_value: 9093
     filter_chains:
     - filters:
-      - name: envoy.filters.network.kafka_broker
-        typed_config:
-          "@type": type.googleapis.com/envoy.extensions.filters.network.kafka_broker.v3.KafkaBroker
-          stat_prefix: kafka_broker_1
-          id_based_broker_address_rewrite_spec:
-            rules:
-            - id: 0
-              host: envoy
-              port: 9092
-            - id: 1
-              host: envoy
-              port: 9093
-            - id: 2
-              host: envoy
-              port: 9094
       - name: envoy.filters.network.tcp_proxy
         typed_config:
           "@type": type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy
@@ -75,7 +45,7 @@ static_resources:
             typed_config:
               "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
 
-  # Broker 2 listener - proxies to broker_2_cluster and rewrites metadata
+  # Broker 2 listener - proxies to broker_2_cluster
   - name: broker_2_listener
     address:
       socket_address:
@@ -84,21 +54,6 @@ static_resources:
         port_value: 9094
     filter_chains:
     - filters:
-      - name: envoy.filters.network.kafka_broker
-        typed_config:
-          "@type": type.googleapis.com/envoy.extensions.filters.network.kafka_broker.v3.KafkaBroker
-          stat_prefix: kafka_broker_2
-          id_based_broker_address_rewrite_spec:
-            rules:
-            - id: 0
-              host: envoy
-              port: 9092
-            - id: 1
-              host: envoy
-              port: 9093
-            - id: 2
-              host: envoy
-              port: 9094
       - name: envoy.filters.network.tcp_proxy
         typed_config:
           "@type": type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy

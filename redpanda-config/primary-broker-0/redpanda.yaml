@@ -19,15 +19,34 @@ redpanda:
           port: 9092
           name: internal
         - address: 0.0.0.0
+          port: 9091
+          name: local
+        - address: 0.0.0.0
           port: 19092
           name: external
+    kafka_api_tls:
+        - name: internal
+          enabled: true
+          cert_file: /etc/redpanda/certs/primary-broker-0.crt
+          key_file: /etc/redpanda/certs/primary-broker-0.key
+          truststore_file: /etc/redpanda/certs/ca.crt
+          require_client_auth: false
+        - name: external
+          enabled: true
+          cert_file: /etc/redpanda/certs/primary-broker-0.crt
+          key_file: /etc/redpanda/certs/primary-broker-0.key
+          truststore_file: /etc/redpanda/certs/ca.crt
+          require_client_auth: false
     advertised_rpc_api:
         address: primary-broker-0
         port: 33145
     advertised_kafka_api:
-        - address: primary-broker-0
+        - address: envoy
           port: 9092
           name: internal
+        - address: primary-broker-0
+          port: 9091
+          name: local
         - address: localhost
           port: 19092
           name: external
@@ -65,3 +84,19 @@ schema_registry:
         - address: 0.0.0.0
           port: 18081
           name: external
+schema_registry_client:
+    brokers:
+        - address: primary-broker-0
+          port: 9091
+        - address: primary-broker-1
+          port: 9091
+        - address: primary-broker-2
+          port: 9091
+pandaproxy_client:
+    brokers:
+        - address: primary-broker-0
+          port: 9091
+        - address: primary-broker-1
+          port: 9091
+        - address: primary-broker-2
+          port: 9091

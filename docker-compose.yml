@@ -11,6 +11,7 @@ services:
       - --overprovisioned
     volumes:
       - ./redpanda-config/primary-broker-0:/etc/redpanda
+      - ./certs:/etc/redpanda/certs:ro
     ports:
       - "19092:19092"
       - "18081:18081"
@@ -18,7 +19,7 @@ services:
     networks:
       - redpanda-net
     healthcheck:
-      test: ["CMD-SHELL", "rpk cluster info --brokers=primary-broker-0:9092 || exit 1"]
+      test: ["CMD-SHELL", "rpk cluster info --brokers=primary-broker-0:9091 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -35,6 +36,7 @@ services:
       - --overprovisioned
     volumes:
       - ./redpanda-config/primary-broker-1:/etc/redpanda
+      - ./certs:/etc/redpanda/certs:ro
     ports:
       - "19093:19093"
       - "18083:18083"
@@ -42,7 +44,7 @@ services:
     networks:
       - redpanda-net
     healthcheck:
-      test: ["CMD-SHELL", "rpk cluster info --brokers=primary-broker-1:9092 || exit 1"]
+      test: ["CMD-SHELL", "rpk cluster info --brokers=primary-broker-1:9091 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -59,6 +61,7 @@ services:
       - --overprovisioned
     volumes:
       - ./redpanda-config/primary-broker-2:/etc/redpanda
+      - ./certs:/etc/redpanda/certs:ro
     ports:
       - "19094:19094"
       - "18085:18085"
@@ -66,7 +69,7 @@ services:
     networks:
       - redpanda-net
     healthcheck:
-      test: ["CMD-SHELL", "rpk cluster info --brokers=primary-broker-2:9092 || exit 1"]
+      test: ["CMD-SHELL", "rpk cluster info --brokers=primary-broker-2:9091 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -84,6 +87,7 @@ services:
       - --overprovisioned
     volumes:
       - ./redpanda-config/secondary-broker-0:/etc/redpanda
+      - ./certs:/etc/redpanda/certs:ro
     ports:
       - "29092:29092"
       - "28081:28081"
@@ -91,7 +95,7 @@ services:
     networks:
       - redpanda-net
     healthcheck:
-      test: ["CMD-SHELL", "rpk cluster info --brokers=secondary-broker-0:9092 || exit 1"]
+      test: ["CMD-SHELL", "rpk cluster info --brokers=secondary-broker-0:9091 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -108,6 +112,7 @@ services:
       - --overprovisioned
     volumes:
       - ./redpanda-config/secondary-broker-1:/etc/redpanda
+      - ./certs:/etc/redpanda/certs:ro
     ports:
       - "29093:29093"
       - "28083:28083"
@@ -115,7 +120,7 @@ services:
     networks:
       - redpanda-net
     healthcheck:
-      test: ["CMD-SHELL", "rpk cluster info --brokers=secondary-broker-1:9092 || exit 1"]
+      test: ["CMD-SHELL", "rpk cluster info --brokers=secondary-broker-1:9091 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -132,6 +137,7 @@ services:
       - --overprovisioned
     volumes:
       - ./redpanda-config/secondary-broker-2:/etc/redpanda
+      - ./certs:/etc/redpanda/certs:ro
     ports:
       - "29094:29094"
       - "28085:28085"
@@ -139,7 +145,7 @@ services:
     networks:
       - redpanda-net
     healthcheck:
-      test: ["CMD-SHELL", "rpk cluster info --brokers=secondary-broker-2:9092 || exit 1"]
+      test: ["CMD-SHELL", "rpk cluster info --brokers=secondary-broker-2:9091 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -187,6 +193,7 @@ services:
     volumes:
       - ./test-producer.sh:/test-producer.sh
       - ./test-consumer.sh:/test-consumer.sh
+      - ./certs:/certs:ro
     networks:
       - redpanda-net
     depends_on:
@@ -201,6 +208,7 @@ services:
     volumes:
       - ./python-producer.py:/app/python-producer.py
       - ./python-consumer.py:/app/python-consumer.py
+      - ./certs:/certs:ro
     working_dir: /app
     networks:
       - redpanda-net

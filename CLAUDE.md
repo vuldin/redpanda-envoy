@@ -2,20 +2,18 @@
 
 ## Project Overview
 
-This is a Proof of Concept demonstrating how Envoy proxy can facilitate transparent failover between Redpanda clusters for clients, without requiring client configuration changes or restarts. The setup includes real-time data replication between clusters using Redpanda Connect (migrator).
+This is a Proof of Concept demonstrating how Envoy proxy can facilitate transparent failover between Redpanda clusters for clients, without requiring client configuration changes or restarts. The demo includes **TLS passthrough** - TLS terminates at the Redpanda brokers (not Envoy), while Envoy forwards encrypted traffic transparently at L4.
 
 ## Architecture
 
 ```
-Client Application (connects to envoy:9092)
-           ↓
-    Envoy Proxy (TCP Load Balancer)
+Client Application (connects to envoy:9092 with TLS)
+           ↓ (TLS encrypted)
+    Envoy Proxy (L4 TCP passthrough — does NOT terminate TLS)
      ↓ (priority 0)        ↓ (priority 1)
 Primary Cluster       Secondary Cluster
 primary-broker-0       secondary-broker-0
-           ↓                      ↑
-           └── Redpanda Migrator ─┘
-              (Real-time Replication)
+  (TLS terminates here)    (TLS terminates here)
 ```
 
 ## Key Components
@@ -28,15 +26,17 @@ primary-broker-0       secondary-broker-0
 - **python-client**: Python 3.11 container with kafka-python library for Python-based testing
 
 ### Configuration Files
-- **docker-compose.yml**: Complete environment setup with volume mounts
-- **redpanda-config/[broker-name]/redpanda.yaml**: Individual broker configurations
-- **envoy-proxy/envoy.yaml**: Envoy TCP proxy with Schema Registry health checks
-- **test-producer.sh**: RPK-based producer connecting via Envoy
-- **test-consumer.sh**: RPK-based consumer with retry logic and proper signal handling
-- **python-producer.py**: Python producer using kafka-python library
-- **python-consumer.py**: Python consumer using kafka-python library
-- **setup-topics.sh**: Creates topics on both clusters
-- **failover-demo.sh**: Main orchestration script with multiple commands
+- **docker-compose.yml**: Complete environment setup with volume mounts (including TLS cert mounts)
+- **redpanda-config/[broker-name]/redpanda.yaml**: Individual broker configurations with `kafka_api_tls` enabled
+- **envoy-proxy/envoy.yaml**: Envoy TCP proxy with Schema Registry health checks (no TLS config needed - passthrough)
+- **generate-certs.sh**: Generates self-signed CA and per-broker TLS certificates
+- **certs/**: Generated TLS certificates (CA + per-broker certs with `envoy` SAN)
+- **test-producer.sh**: RPK-based producer connecting via Envoy with TLS
+- **test-consumer.sh**: RPK-based consumer with retry logic, signal handling, and TLS
+- **python-producer.py**: Python producer using kafka-python library with SSL
+- **python-consumer.py**: Python consumer using kafka-python library with SSL
+- **setup-topics.sh**: Creates topics on both clusters (with TLS flags)
+- **failover-demo.sh**: Main orchestration script (generates certs on start)
 
 ## Important Configuration Details
 
@@ -54,9 +54,30 @@ primary-broker-0       secondary-broker-0
 - **Recovery mode detection**: Schema Registry is disabled in recovery mode
 - **Advantage**: Admin API (port 9644) stays available in recovery mode, but Schema Registry doesn't
 
+### TLS Passthrough
+- **Envoy does NOT terminate TLS** — the `tcp_proxy` filter forwards raw encrypted bytes
+- **TLS terminates at the broker** — Redpanda handles the TLS handshake directly with the client
+- **No TLS config on Envoy listeners** — no `transport_socket`, no certs on Envoy side
+- **Broker certs include `envoy` as a SAN** — clients connect to hostname `envoy`, so the broker cert must be valid for that hostname for TLS verification to succeed
+- **Schema Registry stays plaintext** — health checks from Envoy to Schema Registry (port 8081) remain HTTP, not HTTPS. This is internal traffic on the Docker network.
+- **Certificate generation**: `./generate-certs.sh` creates a self-signed CA and per-broker certs. Each broker cert has SANs: `<broker-hostname>`, `envoy`, `localhost`
+- **Cert mount**: `./certs` directory mounted read-only into all broker and client containers
+
+### Three Kafka Listeners per Broker
+Each broker has 3 Kafka API listeners to separate client, internal, and external traffic:
+- **`internal` (port 9092, TLS)**: Used by Envoy proxy / external clients. Advertised as `envoy:<port>` so clients always route through Envoy.
+- **`local` (port 9091, plaintext)**: Used by Schema Registry and PandaProxy internal clients. Advertised at direct broker addresses (e.g., `primary-broker-0:9091`). This avoids a startup deadlock where Schema Registry needs Envoy, but Envoy health-checks Schema Registry.
+- **`external` (port 19092+, TLS)**: Direct host access, bypasses Envoy. Advertised at `localhost:<port>`.
+
+The `schema_registry_client` and `pandaproxy_client` sections point to the `local` listener (port 9091) so internal components connect directly to brokers without going through Envoy.
+
 ### Redpanda Configuration
 - Each broker uses a dedicated redpanda.yaml config file
 - Configuration mounted as volume: `./redpanda-config/[broker-name]:/etc/redpanda`
+- **TLS enabled on Kafka API**: Each broker has `kafka_api_tls` on `internal` (port 9092) and `external` listeners
+  - `local` listener (port 9091) is plaintext for Schema Registry/PandaProxy internal clients
+  - Certs at `/etc/redpanda/certs/` (mounted from `./certs/`)
+  - `require_client_auth: false` (server-side TLS only, no mTLS)
 - **Important (Linux only)**: Config directories must be owned by UID/GID 101:101 (redpanda user)
   - Docker Desktop on macOS/Windows handles permissions automatically
 - Enable recovery mode by setting `recovery_mode_enabled: true` in the `redpanda:` section
@@ -67,16 +88,16 @@ primary-broker-0       secondary-broker-0
 
 **RPK Test Client:**
 - Uses Redpanda image with overridden entrypoint (`/bin/bash`)
-- RPK-based scripts (no external dependencies)
+- RPK-based scripts with `--tls-enabled --tls-truststore /certs/ca.crt` flags
 - Consumer script has proper signal handling for Ctrl+C
 - Producer sends messages every 2 seconds with timestamps
 
 **Python Test Client:**
 - Python 3.11-slim image
-- Uses kafka-python library (installed on container start)
+- Uses kafka-python library with `security_protocol='SSL'` and `ssl_cafile='/certs/ca.crt'`
 - Producer: Sends messages every 2 seconds with delivery callbacks
 - Consumer: Auto-commit enabled, starts from earliest offset if no previous offset
-- Demonstrates real-world client behavior and failover handling
+- Demonstrates real-world TLS client behavior and failover handling
 
 ## Common Commands
 

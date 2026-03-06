@@ -5,6 +5,7 @@ Connects via Envoy proxy to demonstrate transparent failover
 """
 
 import sys
+import ssl
 from datetime import datetime
 from kafka import KafkaConsumer
 from kafka.errors import KafkaError
@@ -13,6 +14,7 @@ from kafka.errors import KafkaError
 KAFKA_BROKER = 'envoy:9092'
 TOPIC = 'failover-demo-topic'
 GROUP_ID = 'python-consumer-group'
+CA_CERT = '/certs/ca.crt'
 
 def create_consumer():
     """Create and configure Kafka consumer"""
@@ -21,6 +23,9 @@ def create_consumer():
         bootstrap_servers=[KAFKA_BROKER],
         client_id='python-consumer',
         group_id=GROUP_ID,
+        security_protocol='SSL',  # TLS passthrough - terminates at broker
+        ssl_cafile=CA_CERT,       # CA cert to verify broker certificate
+        ssl_check_hostname=True,  # Verify broker cert matches 'envoy' SAN
         auto_offset_reset='earliest',  # Start from beginning if no offset
         enable_auto_commit=True,
         auto_commit_interval_ms=5000,
@@ -37,8 +42,9 @@ def create_consumer():
     )
 
 def main():
-    print(f'🚀 Starting Python Kafka Consumer')
+    print(f'🚀 Starting Python Kafka Consumer (TLS enabled)')
     print(f'📡 Connecting to: {KAFKA_BROKER}')
+    print(f'🔐 TLS: Enabled (passthrough via Envoy, terminates at broker)')
     print(f'📝 Topic: {TOPIC}')
     print(f'👥 Consumer Group: {GROUP_ID}')
     print(f'─' * 60)

@@ -1,8 +1,9 @@
 #!/bin/bash
 
-echo "🚀 Starting RPK-based producer test with failover support"
+echo "🚀 Starting RPK-based producer test with failover support (TLS enabled)"
 echo "This producer will continuously send messages and handle broker failures"
 echo "Brokers: envoy:9092,envoy:9093,envoy:9094 (with automatic failover)"
+echo "TLS: Enabled (passthrough via Envoy, terminates at broker)"
 echo "Press Ctrl+C to stop"
 echo "=========================================="
 
@@ -13,6 +14,9 @@ max_failures=3
 # Use all brokers in RPK for automatic failover
 all_brokers="envoy:9092,envoy:9093,envoy:9094"
 
+# TLS flags - certs mounted at /certs from docker-compose
+TLS_FLAGS="--tls-enabled --tls-truststore /certs/ca.crt"
+
 # Trap SIGINT and SIGTERM for clean exit
 trap 'echo -e "\n🛑 Producer stopped"; exit 0' SIGINT SIGTERM
 
@@ -21,7 +25,7 @@ while true; do
     message="Test message $message_count from failover demo - timestamp: $timestamp"
 
     # Try to send message with retry logic
-    if timeout 10 bash -c "echo '$message' | rpk topic produce failover-demo-topic --brokers '$all_brokers' 2>/dev/null"; then
+    if timeout 10 bash -c "echo '$message' | rpk topic produce failover-demo-topic --brokers '$all_brokers' $TLS_FLAGS 2>/dev/null"; then
         echo "✅ Sent message: $message"
         consecutive_failures=0
     else

@@ -1,8 +1,9 @@
 #!/bin/bash
 
-echo "🚀 Starting RPK-based consumer test with failover support"
+echo "🚀 Starting RPK-based consumer test with failover support (TLS enabled)"
 echo "This consumer will continuously read messages and handle broker failures"
 echo "Brokers: envoy:9092,envoy:9093,envoy:9094 (with automatic failover)"
+echo "TLS: Enabled (passthrough via Envoy, terminates at broker)"
 echo "Press Ctrl+C to stop"
 echo "=========================================="
 
@@ -37,6 +38,7 @@ while [ "$should_exit" = false ]; do
     # Use timeout and enhanced error handling
     timeout 45 rpk topic consume failover-demo-topic \
         --brokers envoy:9092,envoy:9093,envoy:9094 \
+        --tls-enabled --tls-truststore /certs/ca.crt \
         --group failover-demo-group \
         --offset start \
         --fetch-max-wait 10s \

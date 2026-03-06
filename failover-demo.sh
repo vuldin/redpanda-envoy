@@ -1,7 +1,11 @@
 #!/bin/bash
 
-echo "🚀 Starting Redpanda Envoy Failover Demo"
-echo "========================================"
+echo "🚀 Starting Redpanda Envoy Failover Demo (TLS Passthrough)"
+echo "========================================================="
+
+# rpk commands inside broker containers use the plaintext local listener (port 9091)
+# Port 9092 has TLS enabled and is used by external clients through Envoy
+LOCAL_BROKER_PORT=9091
 
 # Function to check if containers are running
 check_health() {
@@ -14,7 +18,7 @@ check_health() {
 
     # Check Primary Cluster
     echo "Primary cluster detailed status:"
-    if docker exec primary-broker-0 rpk cluster info --brokers primary-broker-0:9092 2>/dev/null; then
+    if docker exec primary-broker-0 rpk cluster info --brokers primary-broker-0:$LOCAL_BROKER_PORT 2>/dev/null; then
         echo "✅ Primary cluster healthy"
     else
         echo "❌ Primary cluster unhealthy - checking logs..."
@@ -24,7 +28,7 @@ check_health() {
 
     # Check Secondary Cluster
     echo "Secondary cluster detailed status:"
-    if docker exec secondary-broker-0 rpk cluster info --brokers secondary-broker-0:9092 2>/dev/null; then
+    if docker exec secondary-broker-0 rpk cluster info --brokers secondary-broker-0:$LOCAL_BROKER_PORT 2>/dev/null; then
         echo "✅ Secondary cluster healthy"
     else
         echo "❌ Secondary cluster unhealthy - checking logs..."
@@ -217,6 +221,9 @@ restore_cluster_b() {
 case "$1" in
     "start")
         echo "▶️  Starting all services..."
+        echo "🔐 Generating TLS certificates (if needed)..."
+        ./generate-certs.sh
+        echo ""
         docker compose up -d
         echo "⏳ Waiting for services to become healthy (this may take up to 60 seconds)..."
 
