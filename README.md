@@ -398,6 +398,8 @@ No cluster-specific config. Clients discover all 5 brokers via metadata.
 **Worth noting:**
 - Uses the standard Envoy image (`envoyproxy/envoy:v1.31-latest`), no contrib extensions needed
 - During failover you may see `NotLeaderForPartitionError` because primary and secondary are independent clusters without data replication
+- Envoy does not actively close existing TCP connections on failover — clients detect failure via request timeouts, then reconnect (see [FAQ](FAQ.md#what-happens-to-tcp-connections-during-failover))
+- Consumer group offsets are not shared between clusters — consumers restart based on `auto_offset_reset` (see [FAQ](FAQ.md#what-happens-to-consumer-group-offsets-during-failover))
 - For production, add data replication (Redpanda Remote Read Replicas, MirrorMaker 2, or Redpanda Connect)
 
 See `KAFKA_PROXYING_INVESTIGATION.md` for implementation details, replication strategies, and troubleshooting.

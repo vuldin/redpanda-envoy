@@ -232,11 +232,78 @@ No code changes. Clients connect to Envoy's address and Envoy handles routing. Y
 - **`request_timeout_ms`**: Lower to 10000-20000ms for faster failure detection
 - **`reconnect_backoff_ms`**: Lower to 250-500ms for faster reconnection
 
+### What happens to TCP connections during failover?
+
+Envoy does **not** actively close existing TCP connections when it marks a priority level unhealthy. It only stops routing **new** connections to the failed priority. Existing connections persist until the client detects the failure.
+
+**What happens step by step:**
+1. Primary brokers go down (or enter recovery mode)
+2. Envoy health checks fail after ~10-12 seconds (3 consecutive failures)
+3. Envoy marks all priority 0 endpoints unhealthy; **new** connections route to secondary
+4. Existing TCP connections to primary are still open — they hang until the client times out
+5. Client detects timeout, refreshes metadata, establishes new connections (now routed to secondary)
+
+**How each client recovers:**
+
+| Client | Timeout mechanism | Recovery time |
+|---|---|---|
+| Python producer | `request_timeout_ms=10000` expires, then metadata refresh | ~15-20 seconds |
+| Python consumer | `request_timeout_ms=20000` expires, then metadata refresh | ~20-25 seconds |
+| RPK producer | 10-second per-command timeout, then retry loop | ~10-15 seconds |
+| RPK consumer | 45-second per-command timeout, then retry loop | ~15-45 seconds |
+
+**Why Envoy doesn't kill old connections:** The Envoy config has no `idle_timeout` or `max_connection_duration` on the TCP proxy. Adding these would also kill legitimately idle but healthy connections during normal operation. Instead, the clients are configured with aggressive timeouts to detect failure quickly.
+
+The most important client setting is `metadata_max_age_ms=5000`. Without it, kafka-python caches stale broker metadata for up to 5 minutes and won't discover the failover. After a metadata refresh, the client connects through Envoy again, which now routes to the secondary cluster.
+
+Old connections are eventually cleaned up by `connections_max_idle_ms` (20s for producer, 30s for consumer).
+
 ### What happens to consumer group offsets during failover?
 
-Consumer group offsets are **not replicated** between clusters. After failover to the secondary cluster, consumers will start from the beginning (or wherever `auto.offset.reset` is configured) on the secondary cluster's copy of the data.
+Consumer group offsets are **not shared** between the two clusters. Each cluster has its own `__consumer_offsets` topic. After failover, the consumer's group doesn't exist on the secondary cluster, so there is no committed offset to resume from.
 
-In production, you would use a replication mechanism (Redpanda Connect, MirrorMaker 2, or Remote Read Replicas) to keep data in sync, and tools like MirrorMaker's offset translation to align consumer group offsets.
+What happens next depends on the consumer's `auto_offset_reset` setting:
+
+| `auto_offset_reset` | Behavior on secondary after failover |
+|---|---|
+| `earliest` | Reads all existing messages on secondary from the beginning (offset 0) |
+| `latest` | Skips existing messages, only reads new messages produced after the consumer connects |
+| `none` | Throws an error because no committed offset exists |
+
+The Python consumer in this demo uses `auto_offset_reset='earliest'`, so after failover it reads everything on the secondary cluster from the start.
+
+Neither `earliest` nor `latest` is ideal for failover:
+- `earliest` may reprocess old or irrelevant data that was previously on the secondary
+- `latest` may miss messages produced to secondary between the failover event and the consumer reconnecting
+
+In production, use offset translation tools (e.g., MirrorMaker 2's `MirrorCheckpointConnector`) to map consumer offsets between clusters so consumers can resume from approximately where they left off.
+
+### Can consumers connect directly to both clusters to avoid missing data?
+
+Yes, but with significant trade-offs. Instead of routing consumers through Envoy, you run two consumer instances per logical consumer — one connected to each cluster:
+
+```
+Producer → Envoy → active cluster (failover handled by Envoy)
+
+Consumer A → primary cluster (direct, always connected)
+Consumer B → secondary cluster (direct, always connected)
+       ↓              ↓
+   Application merges, deduplicates, and reorders
+```
+
+This guarantees no data loss: whichever cluster the producer writes to, one of the consumers will read it.
+
+**The problems:**
+
+1. **Duplicates at the failover boundary.** Without idempotent producers, a message can land on both clusters: the producer sends to primary, the request times out (broker received it but the ack was lost), failover happens, the producer retries on secondary. Both consumers see the message.
+
+2. **No cross-cluster ordering.** Messages 1-100 land on primary, then 101-200 on secondary. The two consumers have no way to know the global order. The application must use timestamps or sequence numbers in the message payload to merge the two streams correctly.
+
+3. **Double the consumer resources.** Two consumer groups, two sets of partition assignments, two independent rebalancing cycles.
+
+4. **Deduplication is on the application.** Every message needs a unique ID (producer-assigned UUID or sequence number). The application maintains a dedup cache to filter duplicates from the merged stream.
+
+This pattern makes sense when zero message loss is non-negotiable and the application can handle deduplication. For most use cases, the simpler approach is to accept a small data gap at the failover boundary (~15-20 seconds of in-flight messages) and replicate data between clusters.
 
 ### Can I verify which cluster Envoy is routing to?
 
